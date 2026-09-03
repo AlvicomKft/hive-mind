@@ -143,6 +143,15 @@ def tool_call_text(name, tool_input):
 # startedAt, title, inputTokens, outputTokens, parentSessionId, usageMsgId.
 
 
+_SYSTEM_REMINDER = re.compile(r"<system-reminder>.*?</system-reminder>", re.S)
+_HARNESS_NOISE = ("<local-command-", "<command-name>", "<command-message>")
+
+
+def clean_user_text(text):
+    text = _SYSTEM_REMINDER.sub("", text).strip()
+    return "" if text.startswith(_HARNESS_NOISE) else text
+
+
 def parse_claude(lines, meta):
     out = []
     for line in lines:
@@ -165,8 +174,10 @@ def parse_claude(lines, meta):
                 meta["usageMsgId"] = msg.get("id")
                 meta["inputTokens"] = meta.get("inputTokens", 0) + (usage.get("input_tokens") or 0)
                 meta["outputTokens"] = meta.get("outputTokens", 0) + (usage.get("output_tokens") or 0)
-        if texts:
-            text = "\n".join(texts)
+        text = "\n".join(texts)
+        if kind == "user":
+            text = clean_user_text(text)
+        if text:
             if kind == "user" and not meta.get("title"):
                 meta["title"] = " ".join(text.split())[:TITLE_CHARS]
             out.append({"role": kind, "toolName": None, "text": text, "ts": ts})
