@@ -263,6 +263,8 @@ def run_hook(event, dry_run=False):
     if not raw and not (completed and state["next_seq"]):
         return
     patterns = load_patterns(cwd)
+    if meta.get("title"):
+        meta["title"] = scrub(meta["title"], patterns)
     messages = []
     seq = state["next_seq"]
     for m in raw:
@@ -273,7 +275,7 @@ def run_hook(event, dry_run=False):
         "remote": remote,
         "branch": git(cwd, "symbolic-ref", "--short", "HEAD"),
         "cwd": cwd,
-        "title": scrub(meta["title"], patterns) if meta.get("title") else None,
+        "title": meta.get("title"),
         "parentSessionId": meta.get("parentSessionId"),
         "startedAt": meta.get("startedAt") or datetime.now(timezone.utc).isoformat(),
         "completed": completed,

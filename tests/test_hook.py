@@ -98,7 +98,7 @@ class HookTest(unittest.TestCase):
         self.assertTrue(third["completed"])
         self.assertEqual(third["messages"], [])
 
-        sent = json.dumps(Stub.requests)
+        sent = json.dumps(Stub.requests) + (self.state / f"{SESSION}.json").read_text()
         for s in SECRETS:
             self.assertNotIn(s, sent, s)
         self.assertFalse((self.state / "hook.log").exists())
