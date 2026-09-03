@@ -1,0 +1,12 @@
+{
+  "name": "athene-mind",
+  "interface": { "displayName": "Athene Mind" },
+  "plugins": [
+    {
+      "name": "athene-mind",
+      "source": { "source": "local", "path": "./" },
+      "policy": { "installation": "AVAILABLE" },
+      "category": "Productivity"
+    }
+  ]
+}

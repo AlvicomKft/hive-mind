@@ -1,0 +1,27 @@
+{
+  "description": "Ships each finished assistant turn to Athene Mind and marks the session complete on exit.",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/athene_mind.py\" hook",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/athene_mind.py\" hook",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

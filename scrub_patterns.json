@@ -1,0 +1,12 @@
+[
+  {"kind": "private-key", "regex": "-----BEGIN[ A-Z]*PRIVATE KEY(?: BLOCK)?-----[\\s\\S]*?(?:-----END[ A-Z]*PRIVATE KEY(?: BLOCK)?-----|$)"},
+  {"kind": "jwt", "regex": "\\beyJ[A-Za-z0-9_-]{8,}\\.eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]*"},
+  {"kind": "aws-access-key", "regex": "\\b(?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z0-9]{16}\\b"},
+  {"kind": "openai-key", "regex": "\\bsk-(?:proj-|ant-|live-|test-)?[A-Za-z0-9_-]{20,}"},
+  {"kind": "github-token", "regex": "\\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{60,})\\b"},
+  {"kind": "slack-token", "regex": "\\bxox[baprs]-[0-9A-Za-z-]{10,}"},
+  {"kind": "google-api-key", "regex": "\\bAIza[0-9A-Za-z_-]{35}\\b"},
+  {"kind": "athmind-token", "regex": "\\bathmind_[A-Za-z0-9]{20,}\\b"},
+  {"kind": "basic-auth-url", "regex": "\\b[a-z][a-z0-9+.-]*://[^/\\s:@]+:[^/\\s@]+@"},
+  {"kind": "generic-credential", "regex": "(?i)\\b[A-Za-z0-9_.-]*(?:password|passwd|secret|token|api[_-]?key|access[_-]?key)[A-Za-z0-9_.-]*\\s*[:=]\\s*[\"']?[^\\s\"']{6,}"}
+]

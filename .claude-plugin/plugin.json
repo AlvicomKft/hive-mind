@@ -1,0 +1,10 @@
+{
+  "name": "athene-mind",
+  "version": "0.1.0",
+  "description": "Sync your Claude Code / Codex sessions to Athene on every turn (secrets scrubbed locally) and search the team's shared history with athene-mind search|sessions|dump.",
+  "author": { "name": "Alvicom" },
+  "license": "MIT",
+  "keywords": ["history", "transcripts", "search", "team", "athene"],
+  "hooks": "./hooks/hooks.json",
+  "skills": "./skills/"
+}

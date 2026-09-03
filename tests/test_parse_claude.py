@@ -1,0 +1,72 @@
+import unittest
+from pathlib import Path
+
+import athene_mind as am
+
+FIXTURE = Path(__file__).parent / "fixtures" / "claude_session.jsonl"
+
+
+class ParseClaudeTest(unittest.TestCase):
+    def setUp(self):
+        self.meta = {}
+        self.msgs = am.parse_claude(FIXTURE.read_text().splitlines(), self.meta)
+
+    def test_roles_and_order(self):
+        self.assertEqual(
+            [(m["role"], m["toolName"]) for m in self.msgs],
+            [("user", None), ("assistant", None), ("tool_call", "Bash"), ("tool_call", "Read"), ("assistant", None), ("user", None), ("assistant", None)],
+        )
+
+    def test_dropped_content(self):
+        body = "\n".join(m["text"] for m in self.msgs)
+        self.assertNotIn("secretly", body)  # thinking
+        self.assertNotIn("# readme", body)  # tool_result
+        self.assertNotIn("sidechain prompt", body)
+        self.assertNotIn("system note", body)
+        self.assertNotIn("Old summary", body)
+
+    def test_meta(self):
+        self.assertEqual(self.meta["startedAt"], "2026-09-03T10:00:00.000Z")
+        self.assertTrue(self.meta["title"].startswith("Set up deploy."))
+        self.assertLessEqual(len(self.meta["title"]), 240)
+        self.assertEqual((self.meta["inputTokens"], self.meta["outputTokens"]), (1000, 100))
+        self.assertIsNone(self.meta.get("parentSessionId"))
+
+    def test_tokens_dedupe_across_chunks(self):
+        lines = FIXTURE.read_text().splitlines()
+        meta = {}
+        am.parse_claude(lines[:5], meta)
+        am.parse_claude(lines[5:], meta)
+        self.assertEqual((meta["inputTokens"], meta["outputTokens"]), (1000, 100))
+
+    def test_normalize_remote(self):
+        for url in [
+            "git@github.com:Alvicom/Athene-AI.git",
+            "https://GitHub.com/Alvicom/Athene-AI.git",
+            "https://user:pass@github.com/Alvicom/Athene-AI",
+            "ssh://git@github.com:22/Alvicom/Athene-AI.git",
+            "ssh://git@github.com/Alvicom/Athene-AI/",
+        ]:
+            self.assertEqual(am.normalize_remote(url), "github.com/Alvicom/Athene-AI", url)
+
+    def test_parse_codex_shape(self):
+        lines = [
+            '{"timestamp":"2026-08-29T15:26:45.210Z","type":"session_meta","payload":{"id":"x","timestamp":"2026-08-29T15:26:38.191Z","cwd":"/w"}}',
+            '{"timestamp":"2026-08-29T15:26:45.789Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>x</environment_context>"}]}}',
+            '{"timestamp":"2026-08-29T15:26:45.901Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"clone repo twice"}]}}',
+            '{"timestamp":"2026-08-29T15:26:47.986Z","type":"response_item","payload":{"type":"reasoning","summary":[]}}',
+            '{"timestamp":"2026-08-29T15:26:48.815Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Inspecting."}]}}',
+            '{"timestamp":"2026-08-29T15:26:50.462Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","input":"pwd && ls"}}',
+            '{"timestamp":"2026-08-29T15:26:50.606Z","type":"response_item","payload":{"type":"custom_tool_call_output","output":"/w"}}',
+            '{"timestamp":"2026-08-29T15:26:50.608Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":84493,"output_tokens":783}}}}',
+        ]
+        meta = {}
+        msgs = am.parse_codex(lines, meta)
+        self.assertEqual([(m["role"], m["text"]) for m in msgs], [("user", "clone repo twice"), ("assistant", "Inspecting."), ("tool_call", "exec pwd && ls")])
+        self.assertEqual(meta["startedAt"], "2026-08-29T15:26:38.191Z")
+        self.assertEqual(meta["title"], "clone repo twice")
+        self.assertEqual((meta["inputTokens"], meta["outputTokens"]), (84493, 783))
+
+
+if __name__ == "__main__":
+    unittest.main()
