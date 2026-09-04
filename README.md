@@ -23,8 +23,9 @@ Stdlib-only Python 3.11+, one file: `hive_mind.py` is both the hook and the CLI.
    `~/.config/hive-mind/config.json` (mode 600). Done: every turn in a git checkout with an
    `origin` remote is beamed from now on, silently.
 
-The `hive-mind` command is `python3 ~/.claude/plugins/marketplaces/hive-mind/hive_mind.py`;
-alias it, or use `uvx --from git+https://github.com/AlvicomKft/hive-mind hive-mind`.
+`hive-mind` on your PATH: `uv tool install git+https://github.com/AlvicomKft/hive-mind`
+(`--force` to update). Without it, the same script is
+`python3 ~/.claude/plugins/marketplaces/hive-mind/hive_mind.py`.
 
 Options, only if you need them:
 
