@@ -56,6 +56,29 @@ class ParseClaudeTest(unittest.TestCase):
         am.parse_claude(lines[5:], meta)
         self.assertEqual((meta["inputTokens"], meta["outputTokens"]), (1000, 100))
 
+    def test_per_message_usage_and_cache_totals(self):
+        def rec(msg_id, model, usage, text):
+            return json.dumps({"type": "assistant", "timestamp": "2026-09-03T10:00:05.000Z",
+                               "message": {"id": msg_id, "role": "assistant", "model": model,
+                                           "content": [{"type": "text", "text": text}], "usage": usage}})
+        u1 = {"input_tokens": 5, "output_tokens": 50, "cache_read_input_tokens": 9000, "cache_creation_input_tokens": 700}
+        u2 = {"input_tokens": 3, "output_tokens": 30, "cache_read_input_tokens": 1000, "cache_creation_input_tokens": 20}
+        meta = {}
+        # The middle record repeats message id m1: one streamed message, one usage row.
+        msgs = am.parse_claude([rec("m1", "claude-opus-5", u1, "a"), rec("m1", "claude-opus-5", u1, "b"), rec("m2", "claude-fable-5-1", u2, "c")], meta)
+        self.assertEqual([m.get("usage") for m in msgs], [
+            {"model": "claude-opus-5", "input": 5, "output": 50, "cacheRead": 9000, "cacheCreation": 700},
+            None,
+            {"model": "claude-fable-5-1", "input": 3, "output": 30, "cacheRead": 1000, "cacheCreation": 20},
+        ])
+        self.assertEqual((meta["inputTokens"], meta["outputTokens"], meta["cacheReadTokens"], meta["cacheCreationTokens"]), (8, 80, 10000, 720))
+
+    def test_codex_cache_tokens_are_split_out_of_input(self):
+        line = '{"timestamp":"2026-08-29T15:26:50.608Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":900,"cache_write_input_tokens":40,"output_tokens":7}}}}'
+        meta = {}
+        am.parse_codex([line], meta)
+        self.assertEqual((meta["inputTokens"], meta["outputTokens"], meta["cacheReadTokens"], meta["cacheCreationTokens"]), (100, 7, 900, 40))
+
     def test_agent_result_kept_as_tool_call(self):
         notification = "<task-notification>\n<task-id>abc</task-id>\n<status>completed</status>\n<result>All green. 3 files changed.</result>\n<usage><tool_uses>4</tool_uses></usage>\n</task-notification>"
         line = json.dumps({"type": "user", "isSidechain": False, "timestamp": "2026-09-03T12:00:00.000Z", "message": {"role": "user", "content": notification}})

@@ -1,9 +1,9 @@
 ---
-name: hive-mind
+name: search
 description: "Search or read the team's shared Claude Code / Codex session history — use for 'did we already', 'last time', 'why is it done this way', 'what is X working on', or anything an earlier session (yours or a teammate's) decided or tried."
 ---
 
-# hive-mind
+# search
 
 Server-side search over every teammate's agent sessions, scoped to the current repo's `origin`
 remote by default. Tool results and thinking are never stored; you get prompts, assistant text,
@@ -29,9 +29,14 @@ $M tail --since today                      # first look: today's turns across th
 $M tail                                    # only what landed since your last tail
 $M tail --role user                        # what people are asking, nothing else
 $M share [<shortId>]                       # print this session's shareable pointer
+$M usage --since 3h [--mine]               # token burn per session and model over a window
 ```
 
-- **Share this session**: `$M share [<shortId>]` prints the pointer block; the `/hive-mind:hive-share`
+- `usage [--since today|3h|ISO] [--until ...] [--mine] [--author A] [--project|--all]` answers
+  "what burned tokens between X and Y": one line per session×model with turns, uncached input,
+  output, cache read and cache creation, then per-model totals. Cache reads dominate the bill on
+  long sessions, so they are counted separately from `in`.
+- **Share this session**: `$M share [<shortId>]` prints the pointer block; the `/hive-mind:share`
   skill wraps it for the "share this chat" ask.
 - `today` = `sessions --since today`. `sessions [--since 14d|yesterday|ISO] [--titles] [--limit N]`
   lists newest first; `--titles` drops everything but time, id and title.

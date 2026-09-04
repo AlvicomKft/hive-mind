@@ -284,7 +284,7 @@ class InstallTest(unittest.TestCase):
         self.assertEqual(sum("hive_mind.py" in c for c in commands), 2)
         self.assertIn("other", commands)
         link = self.home / ".claude" / "skills" / "hive-mind"
-        self.assertEqual(link.resolve(), (ROOT / "skills" / "hive-mind").resolve())
+        self.assertEqual(link.resolve(), (ROOT / "skills" / "search").resolve())
         again = self.run_cli("install", "--harness", "claude")
         self.assertIn("already registered", again.stdout)
         self.assertIn("already linked", again.stdout)

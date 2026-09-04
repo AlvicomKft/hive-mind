@@ -72,7 +72,7 @@ class HookTest(unittest.TestCase):
         self.assertEqual(first["path"], f"/api/v1/agent-history/sessions/{SESSION}")
         self.assertEqual(first["auth"], "Bearer athmind_testtoken")
         body = first["body"]
-        self.assertEqual(set(body), {"source", "remote", "branch", "cwd", "title", "parentSessionId", "startedAt", "updatedAt", "completed", "inputTokens", "outputTokens", "models", "spawnDepth", "modelExplicit", "messages"})
+        self.assertEqual(set(body), {"source", "remote", "branch", "cwd", "title", "parentSessionId", "startedAt", "updatedAt", "completed", "inputTokens", "outputTokens", "cacheReadTokens", "cacheCreationTokens", "models", "spawnDepth", "modelExplicit", "messages"})
         self.assertEqual((body["source"], body["remote"], body["branch"], body["completed"]), ("claude", "github.com/Alvicom/Demo", "main", False))
         self.assertEqual(body["startedAt"], "2026-09-03T10:00:00.000Z")
         self.assertEqual(body["updatedAt"], "2026-09-03T10:00:06+00:00")

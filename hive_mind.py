@@ -189,6 +189,7 @@ AGENT_SPAWN = "Agent"
 AGENT_RESULT = "Agent result"
 AGENT_RESULT_CHARS = 4000
 _AGENT_RESULT = re.compile(r"<task-notification>.*?<result>(.*?)</result>", re.S)
+USAGE_TOTALS = {"input": "inputTokens", "output": "outputTokens", "cacheRead": "cacheReadTokens", "cacheCreation": "cacheCreationTokens"}
 
 
 def clean_user_text(text):
@@ -232,16 +233,28 @@ def parse_claude(lines, meta, sidechain=False):
         content = msg.get("content")
         blocks = [{"type": "text", "text": content}] if isinstance(content, str) else (content or [])
         texts = [b.get("text", "") for b in blocks if b.get("type") == "text" and b.get("text")]
+        row = None
         if kind == "assistant":
-            if (model := msg.get("model")) and not model.startswith("<"):
+            model = msg.get("model") or None
+            if model and model.startswith("<"):
+                model = None
+            if model:
                 meta.setdefault("models", [])
                 if model not in meta["models"]:
                     meta["models"].append(model)
             usage = msg.get("usage") or {}
+            # Streaming repeats one message id across records, each carrying the same usage.
             if usage and msg.get("id") != meta.get("usageMsgId"):
                 meta["usageMsgId"] = msg.get("id")
-                meta["inputTokens"] = meta.get("inputTokens", 0) + (usage.get("input_tokens") or 0)
-                meta["outputTokens"] = meta.get("outputTokens", 0) + (usage.get("output_tokens") or 0)
+                row = {
+                    "model": model,
+                    "input": usage.get("input_tokens") or 0,
+                    "output": usage.get("output_tokens") or 0,
+                    "cacheRead": usage.get("cache_read_input_tokens") or 0,
+                    "cacheCreation": usage.get("cache_creation_input_tokens") or 0,
+                }
+                for field, key in USAGE_TOTALS.items():
+                    meta[key] = meta.get(key, 0) + row[field]
         text = "\n".join(texts)
         summary = kind == "user" and bool(rec.get("isCompactSummary"))
         result = None
@@ -270,6 +283,8 @@ def parse_claude(lines, meta, sidechain=False):
                 emitted.append({"role": "tool_call", "toolName": name, "text": text, "ts": ts})
         if emitted:
             emitted[0]["branch"] = branch_change(rec, meta)
+            if row:
+                emitted[0]["usage"] = row
             out.extend(emitted)
     return out
 
@@ -290,8 +305,13 @@ def parse_codex(lines, meta):
         if kind == "event_msg" and payload.get("type") == "token_count":
             total = (payload.get("info") or {}).get("total_token_usage") or {}
             if total:
-                meta["inputTokens"] = total.get("input_tokens") or 0
+                # Codex counts cache reads inside input_tokens, Claude does not; subtract so
+                # inputTokens means uncached input on both sources.
+                cached = total.get("cached_input_tokens") or 0
+                meta["inputTokens"] = max((total.get("input_tokens") or 0) - cached, 0)
                 meta["outputTokens"] = total.get("output_tokens") or 0
+                meta["cacheReadTokens"] = cached
+                meta["cacheCreationTokens"] = total.get("cache_write_input_tokens") or 0
             continue
         if kind != "response_item":
             continue
@@ -382,6 +402,8 @@ def build_payload(path, slot, base, patterns, *, sidechain, parent_session_id, c
         message = {"seq": seq, "role": m["role"], "toolName": m["toolName"], "text": scrub(m["text"], patterns), "ts": m["ts"]}
         if m.get("branch"):
             message["branch"] = m["branch"]
+        if m.get("usage"):
+            message["usage"] = m["usage"]
         messages.append(message)
         seq += 1
     payload = {
@@ -397,6 +419,8 @@ def build_payload(path, slot, base, patterns, *, sidechain, parent_session_id, c
         "modelExplicit": meta.get("modelExplicit", True),
         "inputTokens": meta.get("inputTokens", 0),
         "outputTokens": meta.get("outputTokens", 0),
+        "cacheReadTokens": meta.get("cacheReadTokens", 0),
+        "cacheCreationTokens": meta.get("cacheCreationTokens", 0),
         "messages": messages,
     }
     return payload, new_offset, seq
@@ -690,7 +714,7 @@ def cmd_install(args):
     if args.harness != "claude":
         sys.stderr.write(f"harness {args.harness!r} is not supported yet; only claude\n")
         sys.exit(2)
-    skill_src = HERE / "skills" / "hive-mind"
+    skill_src = HERE / "skills" / "search"
     link = CLAUDE_SKILLS / "hive-mind"
     settings = read_settings()
     if args.uninstall:
@@ -754,11 +778,11 @@ def parse_since(value):
         midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
         day = midnight if value == "today" else midnight - timedelta(days=1)
         return day.isoformat(timespec="seconds")
-    m = re.fullmatch(r"(\d+)([dhw])", value)
+    m = re.fullmatch(r"(\d+)([mdhw])", value)
     if not m:
         return value
     n, unit = int(m.group(1)), m.group(2)
-    delta = timedelta(**{{"d": "days", "h": "hours", "w": "weeks"}[unit]: n})
+    delta = timedelta(**{{"m": "minutes", "d": "days", "h": "hours", "w": "weeks"}[unit]: n})
     return (now - delta).isoformat(timespec="seconds")
 
 
@@ -1031,6 +1055,53 @@ def cmd_sessions(args):
                 print(agent_line(c, args.verbose))
         if args.links or args.verbose:
             print(f"        {deep_link(cfg, s['id'])}")
+
+
+USAGE_FIELDS = ("input", "output", "cacheRead", "cacheCreation")
+USAGE_HEAD = f"{'id':<10}{'model':<18}{'turns':>6}{'in':>9}{'out':>9}{'cread':>9}{'ccreate':>9}  title"
+
+
+def k_units(n):
+    n = n or 0
+    if n < 1000:
+        return str(n)
+    return f"{n / 1000:.1f}k" if n < 1_000_000 else f"{n / 1_000_000:.1f}M"
+
+
+def usage_numbers(row):
+    return "".join(f"{k_units(row.get(f)):>9}" for f in USAGE_FIELDS)
+
+
+def cmd_usage(args):
+    query = {
+        "since": parse_since(args.since),
+        "until": parse_since(args.until),
+        "remote": project_filter(args),
+        "author": args.author,
+        "mine": "true" if args.mine else None,
+        "limit": args.limit,
+    }
+    cfg = load_config()
+    _, res = request(cfg, "GET", "/usage", query=query)
+    if args.json:
+        dump_json(res)
+        return
+    rows = res.get("rows") or []
+    if not rows:
+        sys.exit("no usage in this window")
+    if not args.tsv:
+        print(USAGE_HEAD)
+    for r in rows:
+        sid, model, turns = short_id(r["sessionId"], args.verbose), model_label([r.get("model")]), r.get("turns", 0)
+        if args.tsv:
+            tsv(sid, r.get("author"), model, turns, *(r.get(f) or 0 for f in USAGE_FIELDS), one_line(r.get("title"), 120))
+            continue
+        print(f"{sid:<10}{model:<18}{turns:>6}{usage_numbers(r)}  {one_line(r.get('title'), 60)}")
+    if args.tsv:
+        return
+    print()
+    for t in res.get("totals") or []:
+        print(f"{'total':<10}{model_label([t.get('model')]):<18}{t.get('turns', 0):>6}{usage_numbers(t)}")
 
 
 def cmd_today(args):
@@ -1306,7 +1377,7 @@ def build_parser():
         sp.add_argument("--branch", help="exact branch name")
         sp.add_argument("--author", help="author substring")
         sp.add_argument("--mine", action="store_true", help="only your own sessions")
-        sp.add_argument("--since", help="today, yesterday, 14d, 12h, 2w or ISO timestamp")
+        sp.add_argument("--since", help="today, yesterday, 30m, 12h, 14d, 2w or ISO timestamp")
         sp.add_argument("--tsv", action="store_true", help="tab-separated columns, no header")
         output(sp)
 
@@ -1330,6 +1401,19 @@ def build_parser():
     ls.add_argument("--with-subagents", action="store_true", help="include subagent child sessions")
     scope(ls)
     ls.set_defaults(fn=cmd_sessions)
+
+    us = sub.add_parser("usage", help="token burn per session and model over a time window")
+    us.add_argument("--since", default="today", help="today, yesterday, 30m, 12h, 14d, 2w or ISO timestamp")
+    us.add_argument("--until", help="same formats; exclusive upper bound")
+    us.add_argument("--project", help="remote substring; default = cwd origin remote")
+    us.add_argument("--all", action="store_true", help="every project")
+    us.add_argument("--author", help="author substring")
+    us.add_argument("--mine", action="store_true", help="only your own sessions")
+    us.add_argument("--limit", type=int, default=50)
+    us.add_argument("--tsv", action="store_true", help="tab-separated columns, no header")
+    us.add_argument("--json", action="store_true", help="raw JSON output")
+    us.add_argument("-v", "--verbose", action="store_true", help="full session ids")
+    us.set_defaults(fn=cmd_usage)
 
     td = sub.add_parser("today", help="sessions touched today (sugar for sessions --since today)")
     td.add_argument("--limit", type=int, default=30)

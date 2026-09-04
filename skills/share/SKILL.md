@@ -1,9 +1,9 @@
 ---
-name: hive-share
+name: share
 description: "Share this Claude Code session with the hive — use for 'share this chat', 'send this session', 'link to this conversation', or when a teammate should read what happened here."
 ---
 
-# hive-share
+# share
 
 Prints the pointer a teammate needs to open this session in Athene or read it from their own
 terminal. Read-only: the session is already beamed on every turn, so no extra upload happens.
