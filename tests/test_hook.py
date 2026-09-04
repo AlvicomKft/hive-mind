@@ -45,7 +45,7 @@ class HookTest(unittest.TestCase):
         subprocess.run(["git", "-C", str(cls.repo), "remote", "add", "origin", "git@github.com:Alvicom/Demo.git"], check=True)
         cls.state = tmp / "state"
         cls.config = tmp / "config.json"
-        cls.config.write_text(json.dumps({"server": f"http://127.0.0.1:{cls.server.server_port}", "token": "athmind_testtoken"}))
+        cls.config.write_text(json.dumps({"server": f"http://127.0.0.1:{cls.server.server_port}", "web": "http://app.test", "token": "athmind_testtoken"}))
         cls.transcript = tmp / f"{SESSION}.jsonl"
         cls.env = {**os.environ, "HIVE_MIND_CONFIG": str(cls.config), "HIVE_MIND_STATE_DIR": str(cls.state), "HOME": str(tmp)}
         cls.env.pop("HIVE_MIND", None)
@@ -120,6 +120,20 @@ class HookTest(unittest.TestCase):
         res = subprocess.run([sys.executable, str(SCRIPT), "hook"], input=json.dumps({"session_id": "x", "transcript_path": str(self.transcript), "cwd": self.tmp.name, "hook_event_name": "Stop"}), capture_output=True, text=True, env=self.env)
         self.assertEqual((res.returncode, res.stdout, res.stderr), (0, "", ""))
         self.assertEqual(len(Stub.requests), n)
+
+    def test_roots_limit_the_hook_to_listed_directories(self):
+        self.transcript.write_text(FIXTURE.read_text())
+        base = json.loads(self.config.read_text())
+        event = json.dumps({"session_id": "rooted", "transcript_path": str(self.transcript), "cwd": str(self.repo), "hook_event_name": "Stop"})
+        try:
+            self.config.write_text(json.dumps({**base, "roots": [str(Path(self.tmp.name) / "elsewhere")]}))
+            res = subprocess.run([sys.executable, str(SCRIPT), "hook", "--dry-run"], input=event, capture_output=True, text=True, env=self.env)
+            self.assertEqual((res.returncode, res.stdout), (0, ""))
+            self.config.write_text(json.dumps({**base, "roots": [self.tmp.name]}))
+            res = subprocess.run([sys.executable, str(SCRIPT), "hook", "--dry-run"], input=event, capture_output=True, text=True, env=self.env)
+            self.assertEqual(json.loads(res.stdout)[0]["remote"], "github.com/Alvicom/Demo")
+        finally:
+            self.config.write_text(json.dumps(base))
 
     def test_subagents_post_as_child_sessions(self):
         Stub.requests.clear()

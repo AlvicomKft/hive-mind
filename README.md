@@ -17,10 +17,11 @@ Plugin (primary — Claude Code keeps it updated; Codex support is parser-only f
 /plugin install hive-mind
 ```
 
-Then, once per laptop, with a personal access token minted on your Athene profile page:
+Then, once per laptop, with a personal access token minted on your Athene profile page (the
+URL is the one you open Athene at; the API address is read from its `config.json`):
 
 ```bash
-python3 ~/.claude/plugins/marketplaces/hive-mind/hive_mind.py login --server https://api.athene.example.com --web https://athene.example.com
+python3 ~/.claude/plugins/marketplaces/hive-mind/hive_mind.py login --server https://athene.example.com
 # or: hive-mind login   (if you alias/symlink the script onto PATH)
 ```
 
@@ -29,11 +30,20 @@ Scriptable alternative (no plugin manager): registers the `Stop`/`SessionEnd` ho
 
 ```bash
 uvx --from git+https://github.com/AlvicomKft/hive-mind hive-mind install --harness claude \
-    --server https://api.athene.example.com --web https://athene.example.com
+    --server https://athene.example.com
 uvx --from git+https://github.com/AlvicomKft/hive-mind hive-mind install --harness claude --uninstall
 ```
 
 `--dry-run` prints the changes first. `claude` is the only harness this accepts today.
+
+By default every git checkout with an `origin` remote is beamed. To limit the hook to your work
+folders, pass `--root` (repeatable) to `login` or `install`:
+
+```bash
+hive-mind login --server https://athene.example.com --root ~/alvicom --root ~/work
+```
+
+Sessions started outside those directories stay on your laptop. `doctor` shows the active roots.
 
 The plugin ships two skills: `/hive-mind:hive-mind` (search and read the team's history,
 with a context-safe workflow: `fetch` a session to disk, `rg` it, `show` only a window) and

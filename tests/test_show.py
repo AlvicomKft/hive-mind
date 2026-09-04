@@ -35,7 +35,7 @@ class FetchTest(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.cache = Path(tmp.name)
         self.enterContext(mock.patch.object(am, "CACHE_DIR", self.cache))
-        self.enterContext(mock.patch.object(am, "load_config", lambda: {"server": "http://x", "token": "t"}))
+        self.enterContext(mock.patch.object(am, "load_config", lambda: {"server": "http://x", "web": "http://x", "token": "t"}))
         self.path = self.cache / f"{SID}.jsonl"
 
     def lines(self):
@@ -81,7 +81,7 @@ class ShowTest(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.cache = Path(tmp.name)
         self.enterContext(mock.patch.object(am, "CACHE_DIR", self.cache))
-        self.enterContext(mock.patch.object(am, "load_config", lambda: {"server": "http://x", "token": "t"}))
+        self.enterContext(mock.patch.object(am, "load_config", lambda: {"server": "http://x", "web": "http://x", "token": "t"}))
         self.enterContext(mock.patch.object(am, "child_sessions", lambda cfg, sid: []))
 
     def show(self, turns, *argv):

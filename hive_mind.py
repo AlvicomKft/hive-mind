@@ -48,9 +48,10 @@ def load_config():
         cfg = json.loads(CONFIG_PATH.read_text())
     except (OSError, json.JSONDecodeError):
         sys.exit(f"no config at {CONFIG_PATH}; run: hive-mind login")
-    if not cfg.get("server") or not cfg.get("token"):
-        sys.exit(f"config {CONFIG_PATH} needs server and token; run: hive-mind login")
+    if not all(cfg.get(k) for k in ("server", "web", "token")):
+        sys.exit(f"config {CONFIG_PATH} is incomplete; run: hive-mind login")
     cfg["server"] = cfg["server"].rstrip("/")
+    cfg["web"] = cfg["web"].rstrip("/")
     return cfg
 
 
@@ -383,6 +384,16 @@ def build_payload(path, slot, base, patterns, *, sidechain, parent_session_id, c
     return payload, new_offset, seq
 
 
+def under_roots(cwd):
+    """Empty roots = every git checkout; otherwise only checkouts inside a listed directory."""
+    try:
+        roots = json.loads(CONFIG_PATH.read_text()).get("roots") or []
+    except (OSError, json.JSONDecodeError):
+        return True
+    path = Path(cwd).resolve()
+    return not roots or any(path == Path(r) or Path(r) in path.parents for r in roots)
+
+
 def run_hook(event, dry_run=False):
     """Returns the number of sessions posted (main + subagents)."""
     session_id = event.get("session_id")
@@ -391,7 +402,7 @@ def run_hook(event, dry_run=False):
     if not session_id or not transcript or not os.path.isfile(transcript):
         return 0
     remote = cwd_remote(cwd)
-    if not remote:
+    if not remote or not under_roots(cwd):
         return 0
     state_path = STATE_DIR / f"{session_id}.json"
     state = json.loads(state_path.read_text()) if state_path.is_file() else {"bytes": 0, "next_seq": 0, "meta": {}}
@@ -573,7 +584,8 @@ def cmd_doctor(args):
     try:
         cfg = json.loads(CONFIG_PATH.read_text())
         server = cfg.get("server", "").rstrip("/")
-        checks.append((bool(server and cfg.get("token")), "config", f"{CONFIG_PATH} server={server or '?'}"))
+        roots = ", ".join(cfg.get("roots") or []) or "every git checkout"
+        checks.append((bool(server and cfg.get("token")), "config", f"{CONFIG_PATH} server={server or '?'} roots={roots}"))
     except (OSError, json.JSONDecodeError) as e:
         cfg, server = None, None
         checks.append((False, "config", f"{CONFIG_PATH}: {e}; run: hive-mind login"))
@@ -695,7 +707,7 @@ def cmd_install(args):
         link.symlink_to(skill_src)
     print("\n".join(actions))
     if needs_login:
-        cmd_login(argparse.Namespace(server=args.server, token=None, web=args.web))
+        cmd_login(argparse.Namespace(server=args.server, token=None, root=args.root))
     cmd_doctor(args)
 
 
@@ -737,7 +749,7 @@ def short_id(session_id, verbose=False):
 
 
 def deep_link(cfg, session_id, seq=None):
-    url = f"{cfg.get('web') or cfg['server']}/agent-history/{session_id}"
+    url = f"{cfg['web']}/agent-history/{session_id}"
     return url if seq is None else f"{url}?seq={seq}"
 
 
@@ -817,26 +829,38 @@ def dump_json(payload):
     print(json.dumps(payload, indent=2, ensure_ascii=False))
 
 
+def api_url(app_url):
+    """The Athene app publishes its API origin in /config.json; the user only knows the app URL."""
+    try:
+        with urllib.request.urlopen(app_url + "/config.json", timeout=15) as resp:
+            backend = json.load(resp)["frontend"]["urls"]["backend"]
+    except (OSError, ValueError, KeyError, TypeError):
+        sys.exit(f"{app_url}/config.json is not an Athene app config; pass the URL you open Athene at")
+    return backend.rstrip("/")
+
+
 def cmd_login(args):
     try:
-        server = args.server or input("Athene server URL: ").strip()
+        app = args.server or input("Athene URL (the one you open in the browser): ").strip()
         token = args.token or getpass.getpass("Personal access token (athmind_...): ").strip()
     except (EOFError, OSError):
         sys.exit("no terminal for the prompt; pass --server and --token")
-    if not server or not token:
+    if not app or not token:
         sys.exit("server and token required")
+    app = app.rstrip("/")
+    cfg = {"server": api_url(app), "web": app, "token": token}
+    if args.root:
+        cfg["roots"] = [str(Path(r).expanduser().resolve()) for r in args.root]
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     CONFIG_PATH.touch(mode=0o600)
     CONFIG_PATH.chmod(0o600)
-    cfg = {"server": server.rstrip("/"), "token": token}
-    if args.web:
-        cfg["web"] = args.web.rstrip("/")
     CONFIG_PATH.write_text(json.dumps(cfg, indent=2) + "\n")
     try:
         _, remotes = request(load_config(), "GET", "/remotes")
     except (RuntimeError, OSError) as e:
         sys.exit(f"config written to {CONFIG_PATH} but verification failed: {e}")
-    print(f"ok: {server} ({len(remotes or [])} remotes visible), config at {CONFIG_PATH}")
+    scope = f", hook limited to {', '.join(cfg['roots'])}" if cfg.get("roots") else ""
+    print(f"ok: {app} → api {cfg['server']} ({len(remotes or [])} remotes visible){scope}, config at {CONFIG_PATH}")
 
 
 def cmd_search(args):
@@ -1239,9 +1263,9 @@ def build_parser():
     h.set_defaults(fn=cmd_hook)
 
     lg = sub.add_parser("login", help="store server URL + token, verify")
-    lg.add_argument("--server")
+    lg.add_argument("--server", help="Athene app URL (the one you open in the browser)")
+    lg.add_argument("--root", action="append", metavar="DIR", help="only beam checkouts under DIR (repeatable); default: every git checkout")
     lg.add_argument("--token")
-    lg.add_argument("--web", help="app origin for web links when it differs from the API server")
     lg.set_defaults(fn=cmd_login)
 
     def output(sp):
@@ -1337,8 +1361,8 @@ def build_parser():
 
     ins = sub.add_parser("install", help="register the hook and skill for a harness, then log in")
     ins.add_argument("--harness", required=True, help="claude (the only supported harness)")
-    ins.add_argument("--server", help="Athene server URL for the login step")
-    ins.add_argument("--web", help="app origin for web links when it differs from the API server")
+    ins.add_argument("--server", help="Athene app URL for the login step")
+    ins.add_argument("--root", action="append", metavar="DIR", help="only beam checkouts under DIR (repeatable)")
     ins.add_argument("--uninstall", action="store_true", help="remove what install added")
     ins.add_argument("--dry-run", action="store_true", help="print the changes instead of making them")
     ins.set_defaults(fn=cmd_install)

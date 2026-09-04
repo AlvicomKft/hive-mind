@@ -58,7 +58,7 @@ class CliTest(unittest.TestCase):
         subprocess.run(["git", "init", "-q", "-b", "main", str(cls.repo)], check=True)
         subprocess.run(["git", "-C", str(cls.repo), "remote", "add", "origin", "git@github.com:Alvicom/Demo.git"], check=True)
         config = tmp / "config.json"
-        config.write_text(json.dumps({"server": f"http://127.0.0.1:{cls.server.server_port}", "token": "athmind_testtoken"}))
+        config.write_text(json.dumps({"server": f"http://127.0.0.1:{cls.server.server_port}", "web": "http://app.test", "token": "athmind_testtoken"}))
         cls.env = {**os.environ, "HIVE_MIND_CONFIG": str(config), "HIVE_MIND_STATE_DIR": str(tmp / "state"), "HOME": str(tmp)}
 
     @classmethod
@@ -213,7 +213,7 @@ class CliTest(unittest.TestCase):
             res.stdout.splitlines(),
             [
                 "share me · Alice · github.com/Alvicom/Demo @ main",
-                f"web:  http://127.0.0.1:{self.server.server_port}/agent-history/{SHARE_SESSION}",
+                f"web:  http://app.test/agent-history/{SHARE_SESSION}",
                 "cli:  hive-mind show 11111111",
             ],
         )

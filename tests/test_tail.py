@@ -43,7 +43,7 @@ class TailTest(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.state = Path(tmp.name)
         self.enterContext(mock.patch.object(am, "STATE_DIR", self.state))
-        self.enterContext(mock.patch.object(am, "load_config", lambda: {"server": "http://x", "token": "t"}))
+        self.enterContext(mock.patch.object(am, "load_config", lambda: {"server": "http://x", "web": "http://x", "token": "t"}))
         self.enterContext(mock.patch.object(am, "project_filter", lambda args: "r"))
         self.enterContext(mock.patch.object(am, "beamed_here", lambda cwd: {"id": B}))
 
