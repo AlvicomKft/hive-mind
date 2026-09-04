@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/banner.png" alt="Hive Mind — shared, searchable session history for coding agents" width="1280"></p>
+
 # Hive Mind
 
 Shared, searchable Claude Code / Codex session history for a team. A hook ships
