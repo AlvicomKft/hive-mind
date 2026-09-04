@@ -567,6 +567,15 @@ def cmd_beam(args):
 
 
 def installed_hook():
+    """The plugin manager's install record wins over stray cache dirs of older versions."""
+    record = Path("~/.claude/plugins/installed_plugins.json").expanduser()
+    try:
+        entries = json.loads(record.read_text())["plugins"]["hive-mind@hive-mind"]
+        path = Path(entries[0]["installPath"])
+        if (path / "hooks" / "hooks.json").is_file():
+            return path
+    except (OSError, ValueError, KeyError, IndexError):
+        pass
     root = Path("~/.claude/plugins").expanduser()
     for hooks in root.glob("**/hooks/hooks.json") if root.is_dir() else []:
         if "hive_mind.py" in hooks.read_text(errors="replace"):
