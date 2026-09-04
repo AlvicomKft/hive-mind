@@ -26,6 +26,7 @@ CLAUDE_SKILLS = Path("~/.claude/skills").expanduser()
 HOOK_EVENTS = ("Stop", "SessionEnd")
 CODEX_SESSIONS = Path("~/.codex/sessions").expanduser()
 API = "/api/v1/agent-history"
+ACCESS_TOKEN = re.compile(r"athmind_[0-9a-f]{40}\Z")
 TOOL_INPUT_CHARS = 200
 TITLE_CHARS = 240
 MAX_MODELS = 8
@@ -630,6 +631,14 @@ def last_beam():
     return datetime.fromtimestamp(max(stamps), timezone.utc).isoformat() if stamps else None
 
 
+def same_origin(a, b):
+    def origin(u):
+        p = urllib.parse.urlsplit(u if "://" in u else "https://" + u)
+        return p.scheme, (p.hostname or "").lower(), p.port or (443 if p.scheme == "https" else 80)
+
+    return origin(a) == origin(b)
+
+
 def cmd_doctor(args):
     checks = []
     try:
@@ -640,7 +649,9 @@ def cmd_doctor(args):
     except (OSError, json.JSONDecodeError) as e:
         cfg, server = None, None
         checks.append((False, "config", f"{CONFIG_PATH}: {e}; run: hive-mind login"))
-    if cfg and server:
+    if cfg and args.server and not same_origin(cfg.get("web") or "", args.server):
+        checks.append((False, "server", f"configured for {cfg.get('web')}, you asked for {args.server}; re-run login --server {args.server}"))
+    elif cfg and server:
         cfg["server"] = server
         try:
             _, remotes = request(cfg, "GET", "/remotes", timeout=10)
@@ -891,13 +902,19 @@ def api_url(app_url):
 
 
 def cmd_login(args):
+    """Piped stdin is the recommended token path: hidden prompts drop pasted characters in some terminals."""
+    tty = sys.stdin.isatty()
     try:
-        app = args.server or input("Athene URL (the one you open in the browser): ").strip()
-        token = args.token or getpass.getpass("Personal access token (athmind_...): ").strip()
+        app = args.server or (input("Athene URL (the one you open in the browser): ").strip() if tty else "")
+        token = (args.token or (getpass.getpass("Personal access token (athmind_...): ") if tty else sys.stdin.read())).strip()
     except (EOFError, OSError):
-        sys.exit("no terminal for the prompt; pass --server and --token")
-    if not app or not token:
-        sys.exit("server and token required")
+        sys.exit("no terminal for the prompt; run this in a terminal window (Claude Code's ! prompt has no TTY), or pipe the token in")
+    if not token:
+        sys.exit("no token; pipe it in (wl-paste | hive-mind login --server <app-url>), pass --token, or run login in a terminal window — Claude Code's ! prompt has no TTY")
+    if not app:
+        sys.exit("--server is required")
+    if not ACCESS_TOKEN.match(token):
+        sys.exit('that is not a Hive Mind token (athmind_ + 40 hex); the paste probably failed, try middle-click paste or --token "$(wl-paste)"')
     app = app.rstrip("/")
     cfg = {"server": api_url(app), "web": app, "token": token}
     if args.root:
@@ -1479,6 +1496,7 @@ def build_parser():
     ins.set_defaults(fn=cmd_install)
 
     dr = sub.add_parser("doctor", help="check config, server, token, hook install and last beam")
+    dr.add_argument("server", nargs="?", help="Athene app URL the config is expected to point at")
     dr.set_defaults(fn=cmd_doctor)
 
     sh = sub.add_parser("share", help="beam this session and print a shareable web + CLI pointer")

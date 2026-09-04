@@ -8,10 +8,11 @@ description: "Check and finish the Hive Mind install — use for '/hive-mind:set
 Reports whether Hive Mind is ready on this machine and, when it is not, tells the user the one
 command they have to run themselves.
 
-`${ARGUMENTS}` is the Athene app URL (the one the user opens in a browser), optional.
+`${ARGUMENTS}` is the Athene app URL (the one the user opens in a browser), optional. Pass it
+through: given a URL, `doctor` also checks that the config points at that deployment.
 
 ```bash
-python3 ${CLAUDE_PLUGIN_ROOT}/hive_mind.py doctor
+python3 ${CLAUDE_PLUGIN_ROOT}/hive_mind.py doctor ${ARGUMENTS}
 ```
 
 Checks print as `ok  ` / `FAIL` plus a label: `config`, `server`, `token`, `hook`, `repo`,
@@ -33,11 +34,15 @@ The user has no token yet, or no config file. Never ask for the token in chat an
 `login` yourself — the token is secret and the prompt is hidden. Tell them, in this order:
 
 1. Mint a token at `<app-url>/profile`, in the Hive Mind section (shown once, copy it).
-2. Run this themselves — the leading `!` keeps the hidden prompt interactive in Claude Code:
+2. Run this themselves in a regular terminal window, not from this session — with the token on
+   the clipboard, piped in, so nothing depends on a hidden prompt:
 
    ```
-   !python3 ${CLAUDE_PLUGIN_ROOT}/hive_mind.py login --server <app-url>
+   wl-paste | python3 ${CLAUDE_PLUGIN_ROOT}/hive_mind.py login --server <app-url>
    ```
+
+   `pbpaste` on macOS, `xclip -o` on X11. `--token <value>` works too but lands in shell history.
+   With neither, plain `login --server <app-url>` still asks for the token at a hidden prompt.
 
 3. Re-run `/hive-mind:setup`.
 
@@ -47,9 +52,12 @@ checkouts under those folders; the default is every git checkout with an `origin
 
 ## `server` or `token` failed
 
-The config exists but the server rejected it: the URL is wrong, the token was revoked, or Hive
-Mind is off for that deployment. Relay the failing line verbatim and point at the same `login`
-command to re-point or re-mint. Do not retry in a loop.
+Two different failures share the `server` label. When the line reads `configured for <url>, you
+asked for <url>`, the config points at another deployment: relay it verbatim and hand them the
+`login --server <app-url>` line above with the URL they asked for. Otherwise the server rejected
+the config — the URL is wrong, the token was revoked, or Hive Mind is off for that deployment;
+relay the failing line verbatim and point at the same `login` command to re-point or re-mint. Do
+not retry in a loop.
 
 ## `hook` failed
 

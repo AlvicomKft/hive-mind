@@ -53,11 +53,14 @@ Then run:
 your profile page and hands you the one command you run yourself:
 
 ```bash
-!python3 ~/.claude/plugins/marketplaces/hive-mind/hive_mind.py login --server https://athene.example.com
+wl-paste | python3 ~/.claude/plugins/marketplaces/hive-mind/hive_mind.py login --server https://athene.example.com
 ```
 
-The leading `!` keeps the hidden token prompt interactive. It verifies the token and stores it in
-`~/.config/hive-mind/config.json` (mode 600).
+Run it in a regular terminal window, with the token on the clipboard — `pbpaste` on macOS,
+`xclip -o` on X11. `--token <value>` works as well, at the cost of a token in your shell history;
+with neither, `login` falls back to a hidden prompt, which needs a TTY that Claude Code's `!`
+prefix does not provide. It verifies the token and stores it in `~/.config/hive-mind/config.json`
+(mode 600).
 
 After install, you should see:
 
@@ -176,6 +179,14 @@ mix character classes (paths, UUIDs and git SHAs are left alone). Tool calls who
 Add your own regexes, one per line, in `.hive-mind-ignore` at the repo root or
 `~/.config/hive-mind/ignore`. Something slipped anyway? `hive-mind purge <shortId>` deletes a
 session you own.
+
+### `login` says there is no terminal for the prompt?
+
+You ran it inside a coding agent. Claude Code's `!` prefix has no TTY, so the hidden prompt cannot
+read anything. Pipe the token in instead — `wl-paste | hive-mind login --server <app-url>` — or
+pass `--token`. A token rejected as "not a Hive Mind token" is a failed paste: the value must be
+`athmind_` plus 40 hex characters, and some terminals hand a hidden prompt the paste hotkey rather
+than the clipboard, which is why the piped form is the one to use.
 
 ### How do I pause it?
 

@@ -233,6 +233,63 @@ class CliTest(unittest.TestCase):
         self.assertEqual(empty.stdout, "")
         self.assertIn("no beamed session", empty.stderr)
 
+    def test_doctor_flags_a_different_deployment(self):
+        res = self.run_cli("doctor", "https://athene.dev.alvicom.ai")
+        self.assertEqual(res.returncode, 1)
+        self.assertIn(
+            "configured for http://app.test, you asked for https://athene.dev.alvicom.ai;"
+            " re-run login --server https://athene.dev.alvicom.ai",
+            res.stdout,
+        )
+        self.assertNotIn("reachable", res.stdout)
+
+    def test_doctor_takes_the_configured_deployment(self):
+        res = self.run_cli("doctor", "http://app.test/")
+        self.assertNotIn("you asked for", res.stdout)
+        self.assertIn("reachable", res.stdout)
+
+
+class LoginTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        home = Path(self.tmp.name)
+        self.config = home / "config.json"
+        self.config.write_text(json.dumps({"server": "http://api.test", "web": "http://app.test", "token": "athmind_" + "a" * 40}))
+        self.env = {**os.environ, "HOME": str(home), "HIVE_MIND_CONFIG": str(self.config), "HIVE_MIND_STATE_DIR": str(home / "state")}
+
+    def run_cli(self, *args, stdin=""):
+        return subprocess.run([sys.executable, str(SCRIPT), *args], input=stdin, capture_output=True, text=True, env=self.env, cwd=self.tmp.name)
+
+    def test_a_piped_token_is_read_from_stdin(self):
+        res = self.run_cli("login", "--server", "http://127.0.0.1:1", stdin="athmind_" + "0f" * 20 + "\n")
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("is not an Athene app config", res.stderr)
+
+    def test_a_piped_mangled_paste_never_reaches_the_config(self):
+        before = self.config.read_text()
+        res = self.run_cli("login", "--server", "http://app.test", stdin="\x1b[200~ab12")
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("not a Hive Mind token", res.stderr)
+        self.assertEqual(self.config.read_text(), before)
+
+    def test_a_mangled_paste_never_reaches_the_config(self):
+        before = self.config.read_text()
+        res = self.run_cli("login", "--server", "http://app.test", "--token", "\x1b[200~ab12")
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("not a Hive Mind token", res.stderr)
+        self.assertIn("wl-paste", res.stderr)
+        self.assertEqual(self.config.read_text(), before)
+
+    def test_a_padded_token_is_accepted_and_the_app_url_is_probed(self):
+        res = self.run_cli("login", "--server", "http://127.0.0.1:1", "--token", "  athmind_" + "0f" * 20 + "\n")
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("is not an Athene app config", res.stderr)
+
+    def test_no_token_anywhere_names_the_piped_form(self):
+        res = self.run_cli("login", "--server", "http://app.test")
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("wl-paste | hive-mind login", res.stderr)
 
 class InstallTest(unittest.TestCase):
     def setUp(self):
@@ -277,7 +334,7 @@ class InstallTest(unittest.TestCase):
         # No config: install stops at the login prompt, after writing hook + skill link.
         res = self.run_cli("install", "--harness", "claude")
         self.assertIn("register Stop/SessionEnd hook", res.stdout)
-        self.assertIn("no terminal for the prompt", res.stderr)
+        self.assertIn("no token; pipe it in", res.stderr)
         settings = self.settings()
         self.assertEqual(settings["model"], "opus")
         commands = [h["command"] for e in HOOK_EVENTS for m in settings["hooks"][e] for h in m["hooks"]]
