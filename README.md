@@ -1,53 +1,75 @@
-# Athene Mind
+# Hive Mind
 
 Shared, searchable Claude Code / Codex session history for a team. A hook ships
 each finished assistant turn to your Athene server; a CLI and an agent skill
 search it back, scoped to the current repo's `origin` remote.
 
-Stdlib-only Python 3.11+, one file: `athene_mind.py` is both the hook and the CLI.
+Why it exists, and what it will never do with the data: [vision.md](vision.md).
+
+Stdlib-only Python 3.11+, one file: `hive_mind.py` is both the hook and the CLI.
 
 ## Install
 
-In Claude Code (Codex: same commands through its plugin UI):
+Plugin (primary — the harness keeps it updated). In Claude Code, Codex the same through its
+plugin UI:
 
 ```
-/plugin marketplace add alvicom/athene-mind
-/plugin install athene-mind
+/plugin marketplace add alvicom/hive-mind
+/plugin install hive-mind
 ```
 
 Then, once per laptop, with a personal access token minted on your Athene profile page:
 
 ```bash
-python3 ~/.claude/plugins/marketplaces/athene-mind/athene_mind.py login --server https://athene.example.com
-# or: athene-mind login   (if you alias/symlink the script onto PATH)
+python3 ~/.claude/plugins/marketplaces/hive-mind/hive_mind.py login --server https://athene.example.com
+# or: hive-mind login   (if you alias/symlink the script onto PATH)
 ```
 
-Config lands in `~/.config/athene-mind/config.json` (mode 600), outside the plugin
+Scriptable alternative (no plugin manager): registers the `Stop`/`SessionEnd` hooks in
+`~/.claude/settings.json`, links the skill into `~/.claude/skills/`, logs in and runs `doctor`.
+
+```bash
+uvx --from git+https://github.com/alvicom/hive-mind hive-mind install --harness claude \
+    --server https://athene.example.com
+uvx --from git+https://github.com/alvicom/hive-mind hive-mind install --harness claude --uninstall
+```
+
+`--dry-run` prints the changes first. `claude` is the only harness this accepts today.
+
+Config lands in `~/.config/hive-mind/config.json` (mode 600), outside the plugin
 dir so plugin updates keep it. The hook is silent from then on; it fires on `Stop`
 and `SessionEnd`, only inside git checkouts that have an `origin` remote.
 
 ## Use
 
 ```bash
-athene-mind search kb sync retry --since 14d          # ranked terms, this repo
-athene-mind search -e 'alembic (upgrade|downgrade)' -C 1
-athene-mind sessions --author laszlo --limit 10
-athene-mind dump <session-id> --start 40 --end 60
-athene-mind purge <session-id>                         # something slipped
-athene-mind hook --dry-run < event.json                # see what would be sent
+hive-mind today                                      # what the team touched today
+hive-mind search kb sync retry --since 14d           # AND-ed terms, grouped by session
+hive-mind search -e 'alembic (upgrade|downgrade)' --flat -C 1
+hive-mind sessions --author laszlo --titles --limit 10
+hive-mind dump <shortId> --around 63 -C 5            # window around a hit
+hive-mind tail --follow                              # new turns as they land
+hive-mind purge <shortId>                            # something slipped
+hive-mind local --since 30d                          # transcripts on this laptop, beamed or not
+hive-mind beam <shortId>                             # ship an older session, sorted by its own time
+hive-mind doctor                                     # config, server, token, hook install
+hive-mind hook --dry-run < event.json                # see what would be sent
 ```
 
-`--project SUBSTR` / `--all` widen the scope; `--json` gives raw API output.
+Ids print as 8-char prefixes and every command that takes one accepts a unique prefix.
+`--project SUBSTR` / `--all` widen the scope, `--mine` narrows to your own sessions; `--json` gives raw API output, `--tsv` the same columns
+tab-separated for `cut`/`awk`, `-v` full ids, scores and web links.
 
 ## What is sent, what is not
 
 Sent per turn: session id, normalized remote (`github.com/org/repo`), branch, cwd,
-first prompt as title, token totals, and messages of three kinds: your prompts,
+first prompt as title, token totals, the assistant models used, and messages of three kinds: your prompts,
 assistant text, and one-line tool calls (`Bash {"command":"git status"}`, input cut
-at 200 chars). Author is derived from your token on the server.
+at 200 chars). Author is derived from your token on the server. Subagent runs are
+shipped the same way, as child sessions of the main one.
 
 Never sent: tool results (file contents, command output), thinking blocks,
-subagent transcripts, system/summary lines.
+system/harness bookkeeping lines.
 
 Scrubbed before sending (`scrub_patterns.json`, seeded from gitleaks rules):
 AWS keys, OpenAI/Anthropic `sk-`, GitHub `gh?_`, Slack `xox?-`, Google `AIza`,
@@ -59,19 +81,21 @@ basic-auth URLs, Athene `athmind_` tokens, and any 32+ char high-entropy string
 
 Escape hatches:
 
-- `ATHENE_MIND=off` in the shell disables the hook.
-- Extra regexes, one per line: `.athene-mind-ignore` at the repo root or `~/.config/athene-mind/ignore`.
-- `athene-mind purge <session-id>` deletes a session you own.
+- `HIVE_MIND=off` in the shell disables the hook.
+- Extra regexes, one per line: `.hive-mind-ignore` at the repo root or `~/.config/hive-mind/ignore`.
+- `hive-mind purge <session-id>` deletes a session you own.
 
-State: `~/.local/state/athene-mind/<session-id>.json` (byte offset, next seq, token
+Config and state move themselves once from the pre-rename `athene-mind` paths.
+
+State: `~/.local/state/hive-mind/<session-id>.json` (byte offset, next seq, token
 totals) and `hook.log` (failures; the hook always exits 0 and never blocks the harness).
-Env overrides: `ATHENE_MIND_CONFIG`, `ATHENE_MIND_STATE_DIR`.
+Env overrides: `HIVE_MIND_CONFIG`, `HIVE_MIND_STATE_DIR`.
 
 ## Develop
 
 ```bash
 python3 -m unittest discover -s tests
-python3 -m py_compile athene_mind.py
+python3 -m py_compile hive_mind.py
 ```
 
 The Codex parser (`rollout-*.jsonl`) is best-effort and not yet exercised against

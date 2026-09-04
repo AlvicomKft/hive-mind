@@ -1,7 +1,7 @@
 {
-  "name": "athene-mind",
+  "name": "hive-mind",
   "version": "0.1.0",
-  "description": "Sync your Claude Code / Codex sessions to Athene on every turn (secrets scrubbed locally) and search the team's shared history with athene-mind search|sessions|dump.",
+  "description": "Sync your Claude Code / Codex sessions to Athene on every turn (secrets scrubbed locally) and search the team's shared history with hive-mind search|sessions|dump.",
   "author": {
     "name": "Alvicom"
   },

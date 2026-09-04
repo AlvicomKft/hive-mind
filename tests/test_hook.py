@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-SCRIPT = ROOT / "athene_mind.py"
+SCRIPT = ROOT / "hive_mind.py"
 FIXTURE = ROOT / "tests" / "fixtures" / "claude_session.jsonl"
 SESSION = "11111111-2222-4333-8444-555555555555"
 SECRETS = ["AKIAIOSFODNN7EXAMPLE", "hunter2hunter", "Pa55w0rd", "MIIEowIBAAKCAQEA7", "athmind_0123456789abcdef", "Zq9vK2mXp7Lr4TnB8wYc3JdF6gHs1AeU5oIiR0kNbVtQxWzM", "wJalrXUtnFEMI", "xoxp-9876543210", ".aws/credentials"]
@@ -47,8 +47,8 @@ class HookTest(unittest.TestCase):
         cls.config = tmp / "config.json"
         cls.config.write_text(json.dumps({"server": f"http://127.0.0.1:{cls.server.server_port}", "token": "athmind_testtoken"}))
         cls.transcript = tmp / f"{SESSION}.jsonl"
-        cls.env = {**os.environ, "ATHENE_MIND_CONFIG": str(cls.config), "ATHENE_MIND_STATE_DIR": str(cls.state), "HOME": str(tmp)}
-        cls.env.pop("ATHENE_MIND", None)
+        cls.env = {**os.environ, "HIVE_MIND_CONFIG": str(cls.config), "HIVE_MIND_STATE_DIR": str(cls.state), "HOME": str(tmp)}
+        cls.env.pop("HIVE_MIND", None)
 
     @classmethod
     def tearDownClass(cls):
@@ -72,9 +72,10 @@ class HookTest(unittest.TestCase):
         self.assertEqual(first["path"], f"/api/v1/agent-history/sessions/{SESSION}")
         self.assertEqual(first["auth"], "Bearer athmind_testtoken")
         body = first["body"]
-        self.assertEqual(set(body), {"source", "remote", "branch", "cwd", "title", "parentSessionId", "startedAt", "completed", "inputTokens", "outputTokens", "messages"})
+        self.assertEqual(set(body), {"source", "remote", "branch", "cwd", "title", "parentSessionId", "startedAt", "updatedAt", "completed", "inputTokens", "outputTokens", "models", "messages"})
         self.assertEqual((body["source"], body["remote"], body["branch"], body["completed"]), ("claude", "github.com/Alvicom/Demo", "main", False))
         self.assertEqual(body["startedAt"], "2026-09-03T10:00:00.000Z")
+        self.assertEqual(body["updatedAt"], "2026-09-03T10:00:06+00:00")
         self.assertEqual([m["seq"] for m in body["messages"]], [0, 1, 2, 3, 4])
         self.assertEqual(set(body["messages"][0]), {"seq", "role", "toolName", "text", "ts"})
         self.assertEqual((body["inputTokens"], body["outputTokens"]), (600, 60))
@@ -96,6 +97,8 @@ class HookTest(unittest.TestCase):
         self.assertEqual(res.returncode, 0, res.stderr)
         third = Stub.requests[2]["body"]
         self.assertTrue(third["completed"])
+        # A completed-only post keeps the historic updatedAt: the last message ts, not now.
+        self.assertEqual(third["updatedAt"], second["updatedAt"])
         self.assertEqual(third["messages"], [])
 
         sent = json.dumps(Stub.requests) + (self.state / f"{SESSION}.json").read_text()
@@ -107,15 +110,40 @@ class HookTest(unittest.TestCase):
         n = len(Stub.requests)
         self.transcript.write_text(FIXTURE.read_text())
         res = subprocess.run([sys.executable, str(SCRIPT), "hook", "--dry-run"], input=json.dumps({"session_id": "dry", "transcript_path": str(self.transcript), "cwd": str(self.repo), "hook_event_name": "Stop"}), capture_output=True, text=True, env=self.env)
-        payload = json.loads(res.stdout)
+        payload = json.loads(res.stdout)[0]
         self.assertEqual(payload["remote"], "github.com/Alvicom/Demo")
         self.assertEqual(len(payload["messages"]), 7)
         self.assertEqual(len(Stub.requests), n)
-        res = subprocess.run([sys.executable, str(SCRIPT), "hook"], input="{}", capture_output=True, text=True, env={**self.env, "ATHENE_MIND": "off"})
+        res = subprocess.run([sys.executable, str(SCRIPT), "hook"], input="{}", capture_output=True, text=True, env={**self.env, "HIVE_MIND": "off"})
         self.assertEqual((res.returncode, res.stdout), (0, ""))
         res = subprocess.run([sys.executable, str(SCRIPT), "hook"], input=json.dumps({"session_id": "x", "transcript_path": str(self.transcript), "cwd": self.tmp.name, "hook_event_name": "Stop"}), capture_output=True, text=True, env=self.env)
         self.assertEqual((res.returncode, res.stdout, res.stderr), (0, "", ""))
         self.assertEqual(len(Stub.requests), n)
+
+    def test_subagents_post_as_child_sessions(self):
+        Stub.requests.clear()
+        self.transcript.write_text(FIXTURE.read_text())
+        subagents = self.transcript.parent / SESSION / "subagents"
+        subagents.mkdir(parents=True, exist_ok=True)
+        (subagents / "agent-abc123.meta.json").write_text(json.dumps({"agentType": "general-purpose", "description": "Child task", "model": "opus"}))
+        (subagents / "agent-abc123.jsonl").write_text(
+            json.dumps({"type": "user", "isSidechain": True, "agentId": "abc123", "timestamp": "2026-09-03T11:00:00.000Z", "message": {"role": "user", "content": "do the thing"}}) + "\n"
+            + json.dumps({"type": "assistant", "isSidechain": True, "agentId": "abc123", "timestamp": "2026-09-03T11:00:01.000Z", "message": {"role": "assistant", "model": "claude-opus-5", "id": "m9", "usage": {"input_tokens": 7, "output_tokens": 3}, "content": [{"type": "text", "text": "done"}]}}) + "\n"
+        )
+        (subagents / "agent-empty.meta.json").write_text(json.dumps({"description": "No text"}))
+        (subagents / "agent-empty.jsonl").write_text(json.dumps({"type": "system", "content": "noise"}) + "\n")
+        res = self.run_hook("Stop")
+        self.assertEqual((res.returncode, res.stderr), (0, ""))
+        paths = [r["path"] for r in Stub.requests]
+        self.assertEqual(paths, ["/api/v1/agent-history/sessions/abc123"])
+        child = Stub.requests[0]["body"]
+        self.assertEqual((child["parentSessionId"], child["title"], child["remote"], child["branch"]), (SESSION, "Child task", "github.com/Alvicom/Demo", "main"))
+        self.assertEqual(child["models"], ["claude-opus-5"])
+        self.assertEqual((child["inputTokens"], child["outputTokens"]), (7, 3))
+        self.assertEqual([(m["role"], m["text"]) for m in child["messages"]], [("user", "do the thing"), ("assistant", "done")])
+        state = json.loads((self.state / f"{SESSION}.json").read_text())
+        self.assertEqual(state["children"]["abc123"]["next_seq"], 2)
+        self.assertEqual(state["children"]["empty"]["next_seq"], 0)
 
 
 if __name__ == "__main__":

@@ -1,12 +1,12 @@
 {
-  "description": "Ships each finished assistant turn to Athene Mind and marks the session complete on exit.",
+  "description": "Ships each finished assistant turn to Hive Mind and marks the session complete on exit.",
   "hooks": {
     "Stop": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/athene_mind.py\" hook",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hive_mind.py\" hook",
             "timeout": 10
           }
         ]
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/athene_mind.py\" hook",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hive_mind.py\" hook",
             "timeout": 10
           }
         ]

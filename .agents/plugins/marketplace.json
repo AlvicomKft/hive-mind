@@ -1,9 +1,9 @@
 {
-  "name": "athene-mind",
-  "interface": { "displayName": "Athene Mind" },
+  "name": "hive-mind",
+  "interface": { "displayName": "Hive Mind" },
   "plugins": [
     {
-      "name": "athene-mind",
+      "name": "hive-mind",
       "source": { "source": "local", "path": "./" },
       "policy": { "installation": "AVAILABLE" },
       "category": "Productivity"

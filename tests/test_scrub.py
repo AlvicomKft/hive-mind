@@ -3,7 +3,7 @@ import re
 import unittest
 from pathlib import Path
 
-import athene_mind as am
+import hive_mind as am
 
 FIXTURE = Path(__file__).parent / "fixtures" / "claude_session.jsonl"
 SECRETS = [
