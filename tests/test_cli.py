@@ -90,16 +90,20 @@ class CliTest(unittest.TestCase):
                 self.assertEqual(res.stdout, "")
                 self.assertTrue(res.stderr.strip())
 
-    def test_sessions_prints_summary_and_model(self):
+    def test_sessions_prints_reply_line_and_markers(self):
         Stub.payloads["sessions"] = {
             "content": [
                 {
                     "id": "abcdef0123456789",
                     "author": "Alice",
+                    "branch": "feat/x",
                     "turns": 12,
                     "models": ["claude-fable-5-1"],
                     "title": "first prompt",
-                    "summary": "1. Primary Request and Intent:\n   ship the summary column",
+                    "summary": "1. Primary Request and Intent:\n   ship it",
+                    "agents": {"count": 3, "maxDepth": 2, "models": [], "inputTokens": 0, "outputTokens": 0},
+                    "lastPrompt": "now do the client side",
+                    "lastReply": "Client updated. Tests pass.",
                     "updatedAt": "2026-09-03T10:00:00Z",
                 }
             ],
@@ -107,9 +111,25 @@ class CliTest(unittest.TestCase):
         }
         res = self.run_cli("sessions")
         self.assertEqual(res.returncode, 0, res.stderr)
-        self.assertIn("Σ 1. Primary Request and Intent: ship the summary column", res.stdout)
-        self.assertIn("fable-5-1", res.stdout)
-        self.assertNotIn("first prompt", res.stdout)
+        meta, reply = res.stdout.splitlines()[:2]
+        self.assertIn("fable-5-1", meta)
+        self.assertIn("3 agents", meta)
+        self.assertIn("Σ", meta)
+        self.assertIn("feat/x", meta)
+        self.assertIn("first prompt", meta)
+        self.assertNotIn("ship it", res.stdout)
+        self.assertEqual(reply, "  ↳ Client updated.")
+        self.assertNotIn("now do the client side", res.stdout)
+
+        verbose = self.run_cli("sessions", "-v")
+        self.assertIn("  › now do the client side", verbose.stdout)
+
+        tsv = self.run_cli("sessions", "--tsv")
+        cols = tsv.stdout.splitlines()[0].split("\t")
+        self.assertEqual(cols[-2:], ["now do the client side", "Client updated. Tests pass."])
+
+        titles = self.run_cli("sessions", "--titles")
+        self.assertEqual(len(titles.stdout.splitlines()), 1)
 
     def test_branch_and_sort_reach_the_api(self):
         Stub.payloads["search"] = {
@@ -194,7 +214,7 @@ class CliTest(unittest.TestCase):
             [
                 "share me · Alice · github.com/Alvicom/Demo @ main",
                 f"web:  http://127.0.0.1:{self.server.server_port}/agent-history/{SHARE_SESSION}",
-                "cli:  hive-mind dump 11111111",
+                "cli:  hive-mind show 11111111",
             ],
         )
         # Read-only: the Stop hook already beams every turn, share must not write.
@@ -207,7 +227,7 @@ class CliTest(unittest.TestCase):
         Stub.payloads["session"] = {"session": {"id": SHARE_SESSION, "title": "t", "author": "Alice", "remote": "r", "branch": "main", "branches": ["main"]}, "messages": []}
         res = self.run_cli("share", "--json")
         self.assertEqual(res.returncode, 0, res.stderr)
-        self.assertEqual(json.loads(res.stdout)["cli"], "hive-mind dump 11111111")
+        self.assertEqual(json.loads(res.stdout)["cli"], "hive-mind show 11111111")
         empty = subprocess.run([sys.executable, str(SCRIPT), "share"], cwd=self.tmp.name, capture_output=True, text=True, env=self.env)
         self.assertEqual(empty.returncode, 1)
         self.assertEqual(empty.stdout, "")

@@ -164,27 +164,26 @@ class FormatTest(unittest.TestCase):
         self.assertEqual(am.model_label(["claude-fable-5-1"]), "fable-5-1")
         self.assertEqual(am.model_label(["claude-fable-5-1", "gpt-5.4"]), "fable-5-1+1")
 
-    def test_dump_marks_truncation(self):
+    def test_show_marks_truncation(self):
         msg = {"seq": 3, "role": "user", "toolName": None, "text": "x" * 30, "ts": "2026-09-03T10:00:00Z"}
         self.assertIn("[+20 chars]", am.format_message(msg, 10))
         tool = {"seq": 4, "role": "tool_call", "toolName": "Bash", "text": "Bash ls -la", "ts": "2026-09-03T10:00:00Z"}
         self.assertTrue(am.format_message(tool, 200).startswith("[4] tool  "))
 
-    def test_session_label_prefers_summary(self):
-        self.assertEqual(am.session_label({"title": "t", "summary": None}, 50), "t")
-        self.assertEqual(
-            am.session_label({"title": "t", "summary": "1. Primary Request\n   do the thing"}, 50),
-            "Σ 1. Primary Request do the thing",
-        )
-        long = am.session_label({"title": "t", "summary": "word " * 100}, 50)
-        self.assertTrue(long.startswith("Σ "))
-        self.assertEqual(len(long) - len("Σ "), am.SUMMARY_CHARS)
+    def test_session_label_is_the_title(self):
+        self.assertEqual(am.session_label({"title": "t", "summary": "s"}, 50), "t")
+        self.assertEqual(am.session_label({"title": "t", "parentSessionId": "abcdef0123"}, 50), "↳abcdef01 t")
+
+    def test_first_sentence_cuts_at_the_first_stop(self):
+        self.assertEqual(am.first_sentence("Done. And more.", 160), "Done.")
+        self.assertEqual(am.first_sentence("no stop here", 160), "no stop here")
+        self.assertEqual(am.first_sentence("word " * 100, 20), "word word word word…")
 
     def test_hit_role_labels_compact_summaries(self):
         self.assertEqual(am.hit_role({"role": "assistant", "toolName": None}), "assistant")
         self.assertEqual(am.hit_role({"role": "user", "toolName": am.COMPACT_SUMMARY}), "[summary]")
 
-    def test_dump_labels_compact_summary(self):
+    def test_show_labels_compact_summary(self):
         msg = {"seq": 7, "role": "user", "toolName": am.COMPACT_SUMMARY, "text": "s", "ts": "2026-09-03T10:00:00Z"}
         self.assertTrue(am.format_message(msg, 200).startswith("[7] summary  "))
 

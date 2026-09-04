@@ -18,8 +18,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 CONFIG_PATH = Path(os.environ.get("HIVE_MIND_CONFIG") or "~/.config/hive-mind/config.json").expanduser()
 STATE_DIR = Path(os.environ.get("HIVE_MIND_STATE_DIR") or "~/.local/state/hive-mind").expanduser()
+CACHE_DIR = Path(os.environ.get("HIVE_MIND_CACHE_DIR") or "~/.cache/hive-mind/sessions").expanduser()
 USER_IGNORE = Path("~/.config/hive-mind/ignore").expanduser()
-LEGACY_DIRS = (("~/.config/athene-mind", CONFIG_PATH.parent), ("~/.local/state/athene-mind", STATE_DIR))
 CLAUDE_PROJECTS = Path("~/.claude/projects").expanduser()
 CLAUDE_SETTINGS = Path("~/.claude/settings.json").expanduser()
 CLAUDE_SKILLS = Path("~/.claude/skills").expanduser()
@@ -41,15 +41,6 @@ def log(msg):
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     with open(STATE_DIR / "hook.log", "a") as f:
         f.write(f"{datetime.now(timezone.utc).isoformat(timespec='seconds')} {msg}\n")
-
-
-def migrate_legacy_dirs():
-    """0.1 shipped as athene-mind; move the old config/state once so logins survive the rename."""
-    for old, new in LEGACY_DIRS:
-        old = Path(old).expanduser()
-        if old.is_dir() and not new.exists():
-            new.parent.mkdir(parents=True, exist_ok=True)
-            old.rename(new)
 
 
 def load_config():
@@ -704,7 +695,7 @@ def cmd_install(args):
         link.symlink_to(skill_src)
     print("\n".join(actions))
     if needs_login:
-        cmd_login(argparse.Namespace(server=args.server, token=None))
+        cmd_login(argparse.Namespace(server=args.server, token=None, web=args.web))
     cmd_doctor(args)
 
 
@@ -713,6 +704,7 @@ def cmd_install(args):
 SHORT_ID = 8
 TAIL_LINE_CHARS = 200
 TAIL_MAX_SESSIONS = 10
+TAIL_MAX_TURNS = 40
 
 
 def parse_since(value):
@@ -745,7 +737,7 @@ def short_id(session_id, verbose=False):
 
 
 def deep_link(cfg, session_id, seq=None):
-    url = f"{cfg['server']}/agent-history/{session_id}"
+    url = f"{cfg.get('web') or cfg['server']}/agent-history/{session_id}"
     return url if seq is None else f"{url}?seq={seq}"
 
 
@@ -756,30 +748,11 @@ def model_label(models):
     return first if len(models) == 1 else f"{first}+{len(models) - 1}"
 
 
-MODEL_SHORT = {"fable": "f", "opus": "o", "sonnet": "s", "haiku": "h"}
-
-
-def model_short(model):
-    name = re.sub(r"^claude-", "", model)
-    return MODEL_SHORT.get(name.split("-")[0], (name[:1] or "?"))
-
-
-def model_use(m):
-    """`~6f` = all six inherited the session model, `6o~1` = one of the six did."""
-    body = f"{m['count']}{model_short(m['model'])}"
-    if m["inherited"] == m["count"]:
-        return f"~{body}"
-    return f"{body}~{m['inherited']}" if m["inherited"] else body
-
-
 def agents_label(s):
-    """`▸ ~6f 6o !2`: child counts per model, `~` = inherited session model, `!N` = max depth."""
     a = s.get("agents")
     if not a:
         return ""
-    parts = [model_use(m) for m in a["models"]]
-    depth = f" !{a['maxDepth']}" if a.get("maxDepth", 0) >= 2 else ""
-    return f"  ▸ {' '.join(parts)}{depth}"
+    return f"  {a['count']} agents"
 
 
 def agent_line(c, verbose):
@@ -796,8 +769,8 @@ def sorted_children(cfg, session_id):
     return sorted(child_sessions(cfg, session_id), key=lambda c: (int(c.get("spawnDepth") or 1), c.get("startedAt") or ""))
 
 
-SUMMARY_PREFIX = "Σ "
-SUMMARY_CHARS = 120
+SUMMARY_MARK = "  Σ"
+RECAP_CHARS = 160
 
 
 def branch_label(s, verbose):
@@ -809,13 +782,15 @@ def branch_label(s, verbose):
 
 
 def session_label(s, limit):
-    """Compaction summary beats the first-prompt title: it describes the whole session."""
     parent = s.get("parentSessionId")
     prefix = f"↳{short_id(parent)} " if parent else ""
-    summary = s.get("summary")
-    if summary:
-        return prefix + SUMMARY_PREFIX + one_line(summary, SUMMARY_CHARS)
     return prefix + one_line(s.get("title"), limit)
+
+
+def first_sentence(text, limit):
+    flat = " ".join((text or "").split())
+    cut = re.search(r"(?<=[.!?])\s", flat)
+    return one_line(flat[: cut.start()] if cut else flat, limit)
 
 
 def one_line(text, limit):
@@ -853,7 +828,10 @@ def cmd_login(args):
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     CONFIG_PATH.touch(mode=0o600)
     CONFIG_PATH.chmod(0o600)
-    CONFIG_PATH.write_text(json.dumps({"server": server.rstrip("/"), "token": token}, indent=2) + "\n")
+    cfg = {"server": server.rstrip("/"), "token": token}
+    if args.web:
+        cfg["web"] = args.web.rstrip("/")
+    CONFIG_PATH.write_text(json.dumps(cfg, indent=2) + "\n")
     try:
         _, remotes = request(load_config(), "GET", "/remotes")
     except (RuntimeError, OSError) as e:
@@ -948,7 +926,7 @@ def print_hits_by_session(cfg, args, hits):
     if args.tsv:
         return
     plural = "session" if len(groups) == 1 else "sessions"
-    print(f"\n{len(hits)} hits in {len(groups)} {plural}; read one with: dump <shortId> --around <seq> -C 5")
+    print(f"\n{len(hits)} hits in {len(groups)} {plural}; read one with: show <shortId> --around <seq> -C 5")
 
 
 def strip_marks(snippet):
@@ -982,17 +960,21 @@ def cmd_sessions(args):
             tsv(stamp, sid, session_label(s, 120))
             continue
         if args.tsv:
-            tsv(stamp, sid, s.get("author"), s.get("turns", 0), model_label(s.get("models")) + agents_label(s).strip(), session_label(s, 120))
+            tsv(stamp, sid, s.get("author"), s.get("turns", 0), model_label(s.get("models")) + agents_label(s).strip(),
+                session_label(s, 120), one_line(s.get("lastPrompt"), 300), one_line(s.get("lastReply"), 300))
             continue
         if args.titles:
             print(f"{stamp}  {sid}  {session_label(s, 120)}")
             continue
+        mark = SUMMARY_MARK if s.get("summary") else ""
         print(
-            f"{stamp}  {sid}  {s.get('author')}  {s.get('turns', 0):4d}  "
-            f"{model_label(s.get('models'))}{agents_label(s)}  {session_label(s, 100)}"
+            f"{stamp}  {sid}  {s.get('author')}  {branch_label(s, args.verbose)}  {s.get('turns', 0):4d}  "
+            f"{model_label(s.get('models'))}{agents_label(s)}{mark}  {session_label(s, 100)}"
         )
-        if args.verbose and len(s.get("branches") or []) > 1:
-            print(f"        {branch_label(s, True)}")
+        if args.verbose and s.get("lastPrompt"):
+            print(f"  › {one_line(s['lastPrompt'], RECAP_CHARS)}")
+        if s.get("lastReply"):
+            print(f"  ↳ {first_sentence(s['lastReply'], RECAP_CHARS)}")
         if args.verbose and s.get("agents"):
             for c in sorted_children(cfg, s["id"]):
                 print(agent_line(c, args.verbose))
@@ -1010,22 +992,74 @@ def child_sessions(cfg, session_id):
     return page.get("content") or []
 
 
-def cmd_dump(args):
+SHOW_DEFAULT_TURNS = 30
+SHOW_DEFAULT_CHARS = 600
+SHOW_MAX_CHARS = 2000
+CACHE_TTL_DAYS = 30
+FETCH_FIELDS = ("seq", "role", "toolName", "ts", "branch", "text")
+
+
+def sweep_cache():
+    cutoff = time.time() - CACHE_TTL_DAYS * 86400
+    for f in CACHE_DIR.glob("*.jsonl"):
+        if f.stat().st_mtime < cutoff:
+            f.unlink()
+
+
+def fetch_session(cfg, session_id):
+    """Sync one session into the JSONL cache; returns (session, path, cached turns, added, rewritten)."""
+    _, meta = request(cfg, "GET", f"/sessions/{session_id}", query={"to": 0})
+    s = meta["session"]
+    turns = int(s.get("turns") or 0)
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    sweep_cache()
+    path = CACHE_DIR / f"{s['id']}.jsonl"
+    if not path.exists():
+        path.touch()
+    with path.open() as f:
+        have = sum(1 for _ in f)
+    if have == turns:
+        return s, path, have, 0, False
+    # A purge-and-rebeam shortens the session server-side: the cached tail is stale, so start over.
+    rewritten = have > turns
+    start = 0 if rewritten else have
+    _, res = request(cfg, "GET", f"/sessions/{s['id']}", query={"from": start}, timeout=60)
+    rows = [{k: m.get(k) for k in FETCH_FIELDS} for m in res.get("messages") or []]
+    with path.open("w" if rewritten else "a") as f:
+        f.writelines(json.dumps(r, ensure_ascii=False) + "\n" for r in rows)
+    return s, path, start + len(rows), len(rows), rewritten
+
+
+def cmd_fetch(args):
+    _, path, turns, added, rewritten = fetch_session(load_config(), args.session_id)
+    print(f"{path}  {turns} turns  ({'rewritten' if rewritten else f'+{added}'})")
+
+
+def cmd_show(args):
     if args.tools:
         args.role = "tool_call"
     if args.around is not None:
         args.start = max(0, args.around - args.context)
         args.end = args.around + args.context
+    ranged = args.all or args.around is not None or args.start or args.end is not None or args.last is not None
+    if args.last is None and not ranged and not args.role:
+        args.last = SHOW_DEFAULT_TURNS
+    if args.max_msg is None:
+        args.max_msg = SHOW_MAX_CHARS if ranged else SHOW_DEFAULT_CHARS
     cfg = load_config()
-    _, res = request(cfg, "GET", f"/sessions/{args.session_id}", query={"from": args.start, "to": args.end})
-    messages = [m for m in res.get("messages") or [] if not args.role or m["role"] == args.role]
-    s = res["session"]
+    s, path, turns, _, _ = fetch_session(cfg, args.session_id)
+    start = max(0, turns - args.last) if args.last is not None else args.start
+    end = turns - 1 if args.end is None else min(args.end, turns - 1)
+    with path.open() as f:
+        rows = [json.loads(line) for line in f]
+    messages = [m for m in rows[start : end + 1] if not args.role or m["role"] == args.role]
     children = child_sessions(cfg, s["id"]) if s.get("childCount") else []
-    if args.json:
-        dump_json({"session": s, "messages": messages, "subagents": children})
-        return
     print(f"# {short_id(s['id'], args.verbose)} {s.get('author')} {s.get('remote')} {branch_label(s, args.verbose)} {model_label(s.get('models'))} {local_time(s.get('startedAt'))}")
     print(f"# {one_line(s.get('title'), 200)}")
+    if start > end:
+        print(f"# {turns} turns, nothing to show past seq {start} · rg {path}")
+    elif start or end < turns - 1:
+        print(f"# {turns} turns, showing {start}..{end} · rg {path} for the rest")
     if args.links or args.verbose:
         print(f"# {deep_link(cfg, s['id'])}")
     if args.subagents:
@@ -1087,7 +1121,7 @@ def cmd_share(args):
         "remote": s.get("remote"),
         "branch": branch_label(s, False),
         "web": deep_link(cfg, s["id"]),
-        "cli": f"hive-mind dump {short_id(s['id'])}",
+        "cli": f"hive-mind show {short_id(s['id'])}",
     }
     if args.json:
         dump_json(block)
@@ -1110,27 +1144,39 @@ def tail_state_path(remote):
     return STATE_DIR / f"tail-{key}.json"
 
 
+def at_or_after(ts, since):
+    return bool(ts) and datetime.fromisoformat(ts.replace("Z", "+00:00")) >= since
+
+
 def tail_once(cfg, args, state, first):
     query = {"remote": args.remote, "branch": args.branch, "since": parse_since(args.since or "1d"), "mine": "true" if args.mine else None, "page": 0, "size": args.sessions}
     _, page = request(cfg, "GET", "/sessions", query=query)
+    since = datetime.fromisoformat(parse_since(args.since)) if args.since else None
+    skip = None if args.self else (beamed_here(os.getcwd()) or {}).get("id")
     lines = []
     for s in reversed(page.get("content") or []):
         sid = s["id"]
+        if sid == skip:
+            state[sid] = s.get("turns", 0)
+            continue
         known = sid in state
-        seq_from = state[sid] if known else s.get("turns", 0)
-        if first and not known:
+        seq_from = 0 if since else state[sid] if known else s.get("turns", 0)
+        if first and not known and not since:
             state[sid] = seq_from
             continue
         _, detail = request(cfg, "GET", f"/sessions/{sid}", query={"from": seq_from})
         for m in detail.get("messages") or []:
             state[sid] = m["seq"] + 1
-            if m["role"] not in args.roles:
+            if m["role"] not in args.roles or (since and not at_or_after(m.get("ts"), since)):
                 continue
             lines.append(
                 {
                     "sessionId": sid,
                     "seq": m["seq"],
+                    "ts": m.get("ts"),
                     "author": s.get("author"),
+                    "title": s.get("title"),
+                    "branch": branch_label(s, args.verbose),
                     "role": m["role"],
                     "text": m.get("text") or "",
                 }
@@ -1139,15 +1185,23 @@ def tail_once(cfg, args, state, first):
 
 
 def print_tail(cfg, args, lines):
+    skipped = len(lines) - args.limit
+    if skipped > 0:
+        lines = lines[-args.limit :]
+        print(f"+{skipped} older turns skipped", file=sys.stderr)
+    header = None
     for line in lines:
         if args.json:
             dump_json(line)
             continue
         if args.tsv:
-            tsv(short_id(line["sessionId"], args.verbose), line["seq"], line["author"], line["role"], line["text"])
+            tsv(short_id(line["sessionId"], args.verbose), line["seq"], line["ts"], line["author"], line["role"], line["text"])
             continue
-        prefix = f"{short_id(line['sessionId'], args.verbose)} {line['author']} {line['role']}:"
-        print(f"{prefix} {one_line(line['text'], TAIL_LINE_CHARS)}")
+        group = line["sessionId"]
+        if group != header:
+            header = group
+            print(f"# {short_id(group, args.verbose)} {line['author']} · {one_line(line['title'], 80)} · {line['branch']}")
+        print(f"{local_time(line['ts'], '%H:%M')} {line['role']}: {one_line(line['text'], TAIL_LINE_CHARS)}")
         if args.links or args.verbose:
             print(f"  {deep_link(cfg, line['sessionId'], line['seq'])}")
 
@@ -1168,7 +1222,7 @@ def cmd_tail(args):
             path.write_text(json.dumps(state))
             if not args.follow:
                 if not lines:
-                    sys.exit("no new turns")
+                    sys.exit("no new turns" if args.since else "no new turns; run `tail --since today` for a first look")
                 return
             time.sleep(args.interval)
     except KeyboardInterrupt:
@@ -1187,6 +1241,7 @@ def build_parser():
     lg = sub.add_parser("login", help="store server URL + token, verify")
     lg.add_argument("--server")
     lg.add_argument("--token")
+    lg.add_argument("--web", help="app origin for web links when it differs from the API server")
     lg.set_defaults(fn=cmd_login)
 
     def output(sp):
@@ -1232,23 +1287,32 @@ def build_parser():
     scope(td)
     td.set_defaults(fn=cmd_today)
 
-    d = sub.add_parser("dump", help="read one session; SESSION_ID may be an 8-char prefix")
+    d = sub.add_parser("show", help=f"render a window of one session (default: last {SHOW_DEFAULT_TURNS} turns); SESSION_ID may be an 8-char prefix")
     d.add_argument("session_id")
     d.add_argument("--start", type=int, default=0, help="first seq")
     d.add_argument("--end", type=int, help="last seq")
     d.add_argument("--around", type=int, help="center the window on this seq")
+    d.add_argument("--last", type=int, metavar="N", help="only the final N turns")
     d.add_argument("-C", "--context", type=int, default=5, help="turns either side of --around")
     d.add_argument("--role", choices=["user", "assistant", "tool_call"])
     d.add_argument("--tools", action="store_true", help="tool calls only, one line each")
-    d.add_argument("--max-msg", type=int, default=2000, help="chars kept per message")
+    d.add_argument("--all", action="store_true", help="the whole session; prefer `fetch` + rg")
+    d.add_argument("--max-msg", type=int, help=f"chars kept per message (default {SHOW_DEFAULT_CHARS}, {SHOW_MAX_CHARS} with --start/--end/--around/--last/--all)")
     d.add_argument("--subagents", action="store_true", help="list this session's subagent children")
-    output(d)
-    d.set_defaults(fn=cmd_dump)
+    d.add_argument("--links", action="store_true", help="append web deep links")
+    d.add_argument("-v", "--verbose", action="store_true", help="full ids, links")
+    d.set_defaults(fn=cmd_show)
 
-    t = sub.add_parser("tail", help="new turns since the last tail, across the project's sessions")
-    t.add_argument("--follow", action="store_true", help="keep polling")
+    f = sub.add_parser("fetch", help="download one session as JSONL into the local cache and print the path; rg/jq it")
+    f.add_argument("session_id")
+    f.set_defaults(fn=cmd_fetch)
+
+    t = sub.add_parser("tail", help=f"new turns since the last tail (newest {TAIL_MAX_TURNS}), across the project's sessions")
+    t.add_argument("--follow", action="store_true", help="keep polling (human use; agents just call tail again later)")
     t.add_argument("--interval", type=int, default=15, help="seconds between polls with --follow")
     t.add_argument("--sessions", type=int, default=TAIL_MAX_SESSIONS, help="sessions polled per tick")
+    t.add_argument("--limit", type=int, default=TAIL_MAX_TURNS, help="turns printed, newest kept")
+    t.add_argument("--self", action="store_true", help="include this directory's own session")
     t.add_argument("--role", choices=["user", "assistant", "tool_call"])
     scope(t)
     t.set_defaults(fn=cmd_tail)
@@ -1274,6 +1338,7 @@ def build_parser():
     ins = sub.add_parser("install", help="register the hook and skill for a harness, then log in")
     ins.add_argument("--harness", required=True, help="claude (the only supported harness)")
     ins.add_argument("--server", help="Athene server URL for the login step")
+    ins.add_argument("--web", help="app origin for web links when it differs from the API server")
     ins.add_argument("--uninstall", action="store_true", help="remove what install added")
     ins.add_argument("--dry-run", action="store_true", help="print the changes instead of making them")
     ins.set_defaults(fn=cmd_install)
@@ -1293,7 +1358,6 @@ def build_parser():
 
 
 def main(argv=None):
-    migrate_legacy_dirs()
     args = build_parser().parse_args(argv)
     try:
         args.fn(args)

@@ -14,14 +14,14 @@ Plugin (primary — the harness keeps it updated). In Claude Code, Codex the sam
 plugin UI:
 
 ```
-/plugin marketplace add alvicom/hive-mind
+/plugin marketplace add AlvicomKft/hive-mind
 /plugin install hive-mind
 ```
 
 Then, once per laptop, with a personal access token minted on your Athene profile page:
 
 ```bash
-python3 ~/.claude/plugins/marketplaces/hive-mind/hive_mind.py login --server https://athene.example.com
+python3 ~/.claude/plugins/marketplaces/hive-mind/hive_mind.py login --server https://api.athene.example.com --web https://athene.example.com
 # or: hive-mind login   (if you alias/symlink the script onto PATH)
 ```
 
@@ -29,9 +29,9 @@ Scriptable alternative (no plugin manager): registers the `Stop`/`SessionEnd` ho
 `~/.claude/settings.json`, links the skill into `~/.claude/skills/`, logs in and runs `doctor`.
 
 ```bash
-uvx --from git+https://github.com/alvicom/hive-mind hive-mind install --harness claude \
-    --server https://athene.example.com
-uvx --from git+https://github.com/alvicom/hive-mind hive-mind install --harness claude --uninstall
+uvx --from git+https://github.com/AlvicomKft/hive-mind hive-mind install --harness claude \
+    --server https://api.athene.example.com --web https://athene.example.com
+uvx --from git+https://github.com/AlvicomKft/hive-mind hive-mind install --harness claude --uninstall
 ```
 
 `--dry-run` prints the changes first. `claude` is the only harness this accepts today.
@@ -43,12 +43,15 @@ and `SessionEnd`, only inside git checkouts that have an `origin` remote.
 ## Use
 
 ```bash
-hive-mind today                                      # what the team touched today
+hive-mind today                                      # what the team touched today, each with its latest reply
 hive-mind search kb sync retry --since 14d           # AND-ed terms, grouped by session
 hive-mind search -e 'alembic (upgrade|downgrade)' --flat -C 1
 hive-mind sessions --author laszlo --titles --limit 10
-hive-mind dump <shortId> --around 63 -C 5            # window around a hit
-hive-mind tail --follow                              # new turns as they land
+hive-mind fetch <shortId>                            # session → ~/.cache/hive-mind/sessions/<id>.jsonl, then rg/jq it
+hive-mind show <shortId> --around 63 -C 5            # render the window around a hit
+hive-mind show <shortId> --last 10                   # render the final turns (bare show = last 30)
+hive-mind tail --since today                         # today's turns across the project (bare tail = only what is new)
+hive-mind share                                      # web link + show command for this session
 hive-mind purge <shortId>                            # something slipped
 hive-mind local --since 30d                          # transcripts on this laptop, beamed or not
 hive-mind beam <shortId>                             # ship an older session, sorted by its own time
@@ -85,11 +88,11 @@ Escape hatches:
 - Extra regexes, one per line: `.hive-mind-ignore` at the repo root or `~/.config/hive-mind/ignore`.
 - `hive-mind purge <session-id>` deletes a session you own.
 
-Config and state move themselves once from the pre-rename `athene-mind` paths.
 
 State: `~/.local/state/hive-mind/<session-id>.json` (byte offset, next seq, token
 totals) and `hook.log` (failures; the hook always exits 0 and never blocks the harness).
-Env overrides: `HIVE_MIND_CONFIG`, `HIVE_MIND_STATE_DIR`.
+Fetched sessions cache under `~/.cache/hive-mind/sessions/<id>.jsonl`.
+Env overrides: `HIVE_MIND_CONFIG`, `HIVE_MIND_STATE_DIR`, `HIVE_MIND_CACHE_DIR`.
 
 ## Develop
 
