@@ -11,6 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "hive_mind.py"
 HOOK_EVENTS = ("Stop", "SessionEnd")
+SHARE_SESSION = "11111111-2222-4333-8444-555555555555"
 
 
 class Stub(BaseHTTPRequestHandler):
@@ -27,6 +28,9 @@ class Stub(BaseHTTPRequestHandler):
 
     def do_GET(self):
         Stub.seen.append(self.path)
+        if self.path.startswith("/api/v1/agent-history/sessions/"):
+            self._reply(Stub.payloads.get("session", {"session": {}, "messages": []}))
+            return
         self._reply(Stub.payloads.get("sessions", {"content": [], "totalElements": 0}))
 
     def do_POST(self):
@@ -62,6 +66,17 @@ class CliTest(unittest.TestCase):
         cls.server.shutdown()
         cls.server.server_close()
         cls.tmp.cleanup()
+
+    def seed_transcript(self, session_id):
+        """A local transcript plus a hook state file = a session `share` can resolve for this cwd."""
+        directory = Path(self.tmp.name) / ".claude" / "projects" / "repo"
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / f"{session_id}.jsonl").write_text(
+            json.dumps({"type": "user", "cwd": str(self.repo), "sessionId": session_id, "timestamp": "2026-09-03T10:00:00.000Z", "message": {"role": "user", "content": "share me"}}) + "\n"
+        )
+        state = Path(self.tmp.name) / "state"
+        state.mkdir(parents=True, exist_ok=True)
+        (state / f"{session_id}.json").write_text(json.dumps({"bytes": 0, "next_seq": 0, "meta": {}}))
 
     def run_cli(self, *args):
         return subprocess.run([sys.executable, str(SCRIPT), *args], cwd=self.repo, capture_output=True, text=True, env=self.env)
@@ -156,6 +171,49 @@ class CliTest(unittest.TestCase):
         self.assertIn("beamed", again.stdout)
 
 
+
+    def test_share_resolves_the_current_session_beams_and_prints_the_block(self):
+        Stub.payloads.clear()
+        Stub.seen.clear()
+        self.seed_transcript(SHARE_SESSION)
+        Stub.payloads["session"] = {
+            "session": {
+                "id": SHARE_SESSION,
+                "title": "share me",
+                "author": "Alice",
+                "remote": "github.com/Alvicom/Demo",
+                "branch": "main",
+                "branches": ["main"],
+            },
+            "messages": [],
+        }
+        res = self.run_cli("share")
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertEqual(
+            res.stdout.splitlines(),
+            [
+                "share me · Alice · github.com/Alvicom/Demo @ main",
+                f"web:  http://127.0.0.1:{self.server.server_port}/agent-history/{SHARE_SESSION}",
+                "cli:  hive-mind dump 11111111",
+            ],
+        )
+        # Read-only: the Stop hook already beams every turn, share must not write.
+        self.assertEqual(len(Stub.seen), 1)
+        self.assertTrue(Stub.seen[0].startswith(f"/api/v1/agent-history/sessions/{SHARE_SESSION}?"))
+
+    def test_share_json_and_unresolvable_cwd(self):
+        Stub.payloads.clear()
+        self.seed_transcript(SHARE_SESSION)
+        Stub.payloads["session"] = {"session": {"id": SHARE_SESSION, "title": "t", "author": "Alice", "remote": "r", "branch": "main", "branches": ["main"]}, "messages": []}
+        res = self.run_cli("share", "--json")
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertEqual(json.loads(res.stdout)["cli"], "hive-mind dump 11111111")
+        empty = subprocess.run([sys.executable, str(SCRIPT), "share"], cwd=self.tmp.name, capture_output=True, text=True, env=self.env)
+        self.assertEqual(empty.returncode, 1)
+        self.assertEqual(empty.stdout, "")
+        self.assertIn("no beamed session", empty.stderr)
+
+
 class InstallTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -165,6 +223,17 @@ class InstallTest(unittest.TestCase):
         (home / ".claude" / "settings.json").write_text(json.dumps({"model": "opus", "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "other"}]}]}}))
         self.env = {**os.environ, "HOME": str(home), "HIVE_MIND_CONFIG": str(home / "config.json"), "HIVE_MIND_STATE_DIR": str(home / "state")}
         self.home = home
+
+    def seed_transcript(self, session_id):
+        """A local transcript plus a hook state file = a session `share` can resolve for this cwd."""
+        directory = Path(self.tmp.name) / ".claude" / "projects" / "repo"
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / f"{session_id}.jsonl").write_text(
+            json.dumps({"type": "user", "cwd": str(self.repo), "sessionId": session_id, "timestamp": "2026-09-03T10:00:00.000Z", "message": {"role": "user", "content": "share me"}}) + "\n"
+        )
+        state = Path(self.tmp.name) / "state"
+        state.mkdir(parents=True, exist_ok=True)
+        (state / f"{session_id}.json").write_text(json.dumps({"bytes": 0, "next_seq": 0, "meta": {}}))
 
     def run_cli(self, *args):
         return subprocess.run([sys.executable, str(SCRIPT), *args], input="", capture_output=True, text=True, env=self.env, cwd=self.tmp.name)

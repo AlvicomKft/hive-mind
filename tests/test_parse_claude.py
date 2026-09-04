@@ -18,6 +18,22 @@ class ParseClaudeTest(unittest.TestCase):
             [("user", None), ("assistant", None), ("tool_call", "Bash"), ("tool_call", "Read"), ("assistant", None), ("user", None), ("assistant", None)],
         )
 
+    def test_branch_marks_changes_only(self):
+        self.assertEqual([m.get("branch") for m in self.msgs], ["main"] + [None] * 6)
+
+    def test_branch_change_mid_session(self):
+        def rec(seq, branch):
+            body = {"type": "user", "timestamp": f"2026-09-03T10:00:0{seq}.000Z", "message": {"role": "user", "content": f"m{seq}"}}
+            if branch:
+                body["gitBranch"] = branch
+            return json.dumps(body)
+
+        meta = {}
+        first = am.parse_claude([rec(0, "main"), rec(1, "main")], meta)
+        second = am.parse_claude([rec(2, "feat/x"), rec(3, "feat/x"), rec(4, None)], meta)
+        self.assertEqual([m.get("branch") for m in first + second], ["main", None, "feat/x", None, None])
+        self.assertIsNone(meta["lastBranch"])
+
     def test_dropped_content(self):
         body = "\n".join(m["text"] for m in self.msgs)
         self.assertNotIn("secretly", body)  # thinking
@@ -175,3 +191,16 @@ class FormatTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ShellInputTest(unittest.TestCase):
+    def test_bang_command_becomes_tool_row_not_title(self):
+        lines = [
+            json.dumps({"type": "user", "timestamp": "2026-09-03T10:00:00Z", "message": {"role": "user", "content": "<bash-input>ls -la</bash-input>"}}),
+            json.dumps({"type": "user", "timestamp": "2026-09-03T10:00:01Z", "message": {"role": "user", "content": "<bash-stdout>total 0</bash-stdout><bash-stderr></bash-stderr>"}}),
+            json.dumps({"type": "user", "timestamp": "2026-09-03T10:00:02Z", "message": {"role": "user", "content": "now fix the bug"}}),
+        ]
+        meta = {}
+        out = am.parse_claude(lines, meta)
+        self.assertEqual([(m["role"], m["text"]) for m in out], [("tool_call", "Bash ls -la"), ("user", "now fix the bug")])
+        self.assertEqual(meta["title"], "now fix the bug")

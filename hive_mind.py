@@ -162,12 +162,16 @@ def tool_call_text(name, tool_input):
 
 _SYSTEM_REMINDER = re.compile(r"<system-reminder>.*?</system-reminder>", re.S)
 _TASK_NOTIFICATION = re.compile(r"<task-notification>.*?</task-notification>", re.S)
+_BASH_INPUT = re.compile(r"^<bash-input>(.*?)</bash-input>", re.S)
 _HARNESS_NOISE = (
+    "<bash-stdout>",
+    "<bash-stderr>",
     "<local-command-",
     "<command-name>",
     "<command-message>",
     "<task-notification>",
     "[SYSTEM NOTIFICATION",
+    "[Request interrupted by user",
     "Base directory for this skill",
 )
 COMPACT_SUMMARY = "compact-summary"
@@ -191,6 +195,15 @@ def agent_result(text):
     body = match.group(1).strip()
     extra = len(body) - AGENT_RESULT_CHARS
     return body if extra <= 0 else body[:AGENT_RESULT_CHARS] + f"… [+{extra} chars]"
+
+
+def branch_change(rec, meta):
+    """Claude Code stamps every record with its branch; only changes are worth carrying."""
+    branch = rec.get("gitBranch") or None
+    if "lastBranch" in meta and branch == meta["lastBranch"]:
+        return None
+    meta["lastBranch"] = branch
+    return branch
 
 
 def parse_claude(lines, meta, sidechain=False):
@@ -222,23 +235,32 @@ def parse_claude(lines, meta, sidechain=False):
         text = "\n".join(texts)
         summary = kind == "user" and bool(rec.get("isCompactSummary"))
         result = None
+        shell = None
         if kind == "user":
             result = agent_result(text)
             text = clean_user_text(text)
+            if m := _BASH_INPUT.match(text):
+                shell, text = m.group(1).strip(), ""
+        emitted = []
+        if shell:
+            emitted.append({"role": "tool_call", "toolName": "Bash", "text": f"Bash {shell}"[:TOOL_INPUT_CHARS], "ts": ts})
         if text:
             if kind == "user" and not summary and not meta.get("title"):
                 meta["title"] = " ".join(text.split())[:TITLE_CHARS]
             tool = COMPACT_SUMMARY if summary else None
-            out.append({"role": kind, "toolName": tool, "text": text, "ts": ts})
+            emitted.append({"role": kind, "toolName": tool, "text": text, "ts": ts})
         if result:
-            out.append({"role": "tool_call", "toolName": AGENT_RESULT, "text": result, "ts": ts})
+            emitted.append({"role": "tool_call", "toolName": AGENT_RESULT, "text": result, "ts": ts})
         for b in blocks:
             if b.get("type") == "tool_use":
                 name = b.get("name") or "tool"
                 tool_input = b.get("input") or {}
                 # A subagent spawn is worth keeping: its prompt trips the redaction rules, its description does not.
                 text = f"{name} {tool_input.get('description', '')}".strip() if name == AGENT_SPAWN and isinstance(tool_input, dict) else tool_call_text(name, tool_input)
-                out.append({"role": "tool_call", "toolName": name, "text": text, "ts": ts})
+                emitted.append({"role": "tool_call", "toolName": name, "text": text, "ts": ts})
+        if emitted:
+            emitted[0]["branch"] = branch_change(rec, meta)
+            out.extend(emitted)
     return out
 
 
@@ -314,11 +336,14 @@ def subagent_files(transcript, session_id):
     return sorted(directory.glob("agent-*.jsonl")) if directory.is_dir() else []
 
 
-def subagent_title(path):
+def subagent_meta(path):
+    """Claude Code keeps every subagent file flat under `<session>/subagents/`; `spawnDepth`
+    is the only nesting signal we forward (`parentAgentId` is present but the server keys the
+    whole tree on the main session)."""
     try:
-        return json.loads(path.with_suffix(".meta.json").read_text()).get("description")
+        return json.loads(path.with_suffix(".meta.json").read_text())
     except (OSError, json.JSONDecodeError):
-        return None
+        return {}
 
 
 def aware_iso(ts):
@@ -344,16 +369,22 @@ def build_payload(path, slot, base, patterns, *, sidechain, parent_session_id, c
     seq = slot["next_seq"]
     messages = []
     for m in raw:
-        messages.append({"seq": seq, "role": m["role"], "toolName": m["toolName"], "text": scrub(m["text"], patterns), "ts": m["ts"]})
+        message = {"seq": seq, "role": m["role"], "toolName": m["toolName"], "text": scrub(m["text"], patterns), "ts": m["ts"]}
+        if m.get("branch"):
+            message["branch"] = m["branch"]
+        messages.append(message)
         seq += 1
     payload = {
         **base,
+        "branch": meta.get("lastBranch") or base["branch"],
         "title": meta.get("title"),
         "parentSessionId": parent_session_id,
         "startedAt": meta.get("startedAt") or datetime.now(timezone.utc).isoformat(),
         "updatedAt": meta.get("lastTs") or aware_iso(meta.get("startedAt")) or datetime.now(timezone.utc).isoformat(),
         "completed": completed,
         "models": sorted(set(meta.get("models") or []))[:MAX_MODELS],
+        "spawnDepth": meta.get("spawnDepth", 0),
+        "modelExplicit": meta.get("modelExplicit", True),
         "inputTokens": meta.get("inputTokens", 0),
         "outputTokens": meta.get("outputTokens", 0),
         "messages": messages,
@@ -391,7 +422,11 @@ def run_hook(event, dry_run=False):
         for path in subagent_files(transcript, session_id):
             agent_id = path.stem.removeprefix("agent-")
             slot = children.setdefault(agent_id, {"bytes": 0, "next_seq": 0, "meta": {}})
-            slot["meta"].setdefault("title", subagent_title(path))
+            info = subagent_meta(path)
+            slot["meta"].setdefault("title", info.get("description"))
+            slot["meta"].setdefault("spawnDepth", int(info.get("spawnDepth") or 1))
+            if info:
+                slot["meta"]["modelExplicit"] = bool(info.get("model"))
             built = build_payload(path, slot, base, patterns, sidechain=True, parent_session_id=session_id, completed=completed)
             if built:
                 posts.append((agent_id, slot, built))
@@ -721,8 +756,56 @@ def model_label(models):
     return first if len(models) == 1 else f"{first}+{len(models) - 1}"
 
 
+MODEL_SHORT = {"fable": "f", "opus": "o", "sonnet": "s", "haiku": "h"}
+
+
+def model_short(model):
+    name = re.sub(r"^claude-", "", model)
+    return MODEL_SHORT.get(name.split("-")[0], (name[:1] or "?"))
+
+
+def model_use(m):
+    """`~6f` = all six inherited the session model, `6o~1` = one of the six did."""
+    body = f"{m['count']}{model_short(m['model'])}"
+    if m["inherited"] == m["count"]:
+        return f"~{body}"
+    return f"{body}~{m['inherited']}" if m["inherited"] else body
+
+
+def agents_label(s):
+    """`▸ ~6f 6o !2`: child counts per model, `~` = inherited session model, `!N` = max depth."""
+    a = s.get("agents")
+    if not a:
+        return ""
+    parts = [model_use(m) for m in a["models"]]
+    depth = f" !{a['maxDepth']}" if a.get("maxDepth", 0) >= 2 else ""
+    return f"  ▸ {' '.join(parts)}{depth}"
+
+
+def agent_line(c, verbose):
+    depth = int(c.get("spawnDepth") or 1)
+    mark = "" if c.get("modelExplicit", True) else "~"
+    tokens = f"↑{c.get('inputTokens', 0)} ↓{c.get('outputTokens', 0)}"
+    return (
+        f"        {'  ' * depth}↳ {short_id(c['id'], verbose)}  {mark}{model_label(c.get('models'))}  "
+        f"{c.get('turns', 0):4d}  {tokens}  {one_line(c.get('title'), 80)}"
+    )
+
+
+def sorted_children(cfg, session_id):
+    return sorted(child_sessions(cfg, session_id), key=lambda c: (int(c.get("spawnDepth") or 1), c.get("startedAt") or ""))
+
+
 SUMMARY_PREFIX = "Σ "
 SUMMARY_CHARS = 120
+
+
+def branch_label(s, verbose):
+    branches = s.get("branches") or []
+    latest = s.get("branch") or (branches[-1] if branches else None)
+    if verbose and len(branches) > 1:
+        return " → ".join(branches)
+    return latest or "-"
 
 
 def session_label(s, limit):
@@ -833,7 +916,8 @@ def print_hits(cfg, args, hits):
                 h.get("author"), hit_role(h), strip_marks(h.get("snippet")))
             continue
         score = f"{h.get('score') or 0:6.2f} " if args.verbose else ""
-        line = f"{score}{local_time(h.get('ts'))} {short_id(h['sessionId'], args.verbose)}:{h['seq']}{parent_mark(h)} {h.get('author')} {hit_role(h)}"
+        branch = f" {h['branch']}" if len(h.get("branches") or []) > 1 and h.get("branch") else ""
+        line = f"{score}{local_time(h.get('ts'))} {short_id(h['sessionId'], args.verbose)}:{h['seq']}{parent_mark(h)} {h.get('author')}{branch} {hit_role(h)}"
         print(f"{line}\n  {one_line(strip_marks(h.get('snippet')), 300)}")
         if args.links or args.verbose:
             print(f"  {deep_link(cfg, h['sessionId'], h['seq'])}")
@@ -898,15 +982,20 @@ def cmd_sessions(args):
             tsv(stamp, sid, session_label(s, 120))
             continue
         if args.tsv:
-            tsv(stamp, sid, s.get("author"), s.get("turns", 0), model_label(s.get("models")), session_label(s, 120))
+            tsv(stamp, sid, s.get("author"), s.get("turns", 0), model_label(s.get("models")) + agents_label(s).strip(), session_label(s, 120))
             continue
         if args.titles:
             print(f"{stamp}  {sid}  {session_label(s, 120)}")
             continue
         print(
             f"{stamp}  {sid}  {s.get('author')}  {s.get('turns', 0):4d}  "
-            f"{model_label(s.get('models'))}  {session_label(s, 100)}"
+            f"{model_label(s.get('models'))}{agents_label(s)}  {session_label(s, 100)}"
         )
+        if args.verbose and len(s.get("branches") or []) > 1:
+            print(f"        {branch_label(s, True)}")
+        if args.verbose and s.get("agents"):
+            for c in sorted_children(cfg, s["id"]):
+                print(agent_line(c, args.verbose))
         if args.links or args.verbose:
             print(f"        {deep_link(cfg, s['id'])}")
 
@@ -935,16 +1024,18 @@ def cmd_dump(args):
     if args.json:
         dump_json({"session": s, "messages": messages, "subagents": children})
         return
-    print(f"# {short_id(s['id'], args.verbose)} {s.get('author')} {s.get('remote')} {s.get('branch') or '-'} {model_label(s.get('models'))} {local_time(s.get('startedAt'))}")
+    print(f"# {short_id(s['id'], args.verbose)} {s.get('author')} {s.get('remote')} {branch_label(s, args.verbose)} {model_label(s.get('models'))} {local_time(s.get('startedAt'))}")
     print(f"# {one_line(s.get('title'), 200)}")
     if args.links or args.verbose:
         print(f"# {deep_link(cfg, s['id'])}")
     if args.subagents:
-        for c in children:
-            print(f"# ↳ {short_id(c['id'], args.verbose)}  {model_label(c.get('models'))}  {c.get('turns', 0):4d}  {one_line(c.get('title'), 120)}")
+        for c in sorted(children, key=lambda c: (int(c.get("spawnDepth") or 1), c.get("startedAt") or "")):
+            print("#" + agent_line(c, args.verbose)[1:])
     print()
     spawned = {c.get("title"): c["id"] for c in children}
     for m in messages:
+        if m.get("branch"):
+            print(f"[{m['seq']}] branch {local_time(m.get('ts'), '%H:%M')}  {m['branch']}")
         print(format_message(m, args.max_msg, spawned))
 
 
@@ -964,6 +1055,46 @@ def format_message(m, max_msg, spawned=None):
         return f"[{m['seq']}] tool  {stamp}  {name}: {one_line(body, 200)}"
     label = "summary" if m.get("toolName") == COMPACT_SUMMARY else m["role"]
     return f"[{m['seq']}] {label}  {stamp}\n{text}\n"
+
+
+def beamed_here(cwd):
+    """Most recently beamed session for this working directory, per the hook's state files."""
+    here = [
+        e
+        for e in scan_local(None, None)
+        if e["cwd"] == cwd and (STATE_DIR / f"{e['id']}.json").is_file()
+    ]
+    return here[0] if here else None
+
+
+def cmd_share(args):
+    cwd = os.getcwd()
+    if args.session_id:
+        entry = next((e for e in scan_local(None, None) if e["id"].startswith(args.session_id)), None)
+        session_id = entry["id"] if entry else args.session_id
+    else:
+        entry = beamed_here(cwd)
+        if not entry:
+            sys.exit("no beamed session for this directory; run `hive-mind local` to pick one")
+        session_id = entry["id"]
+    cfg = load_config()
+    _, res = request(cfg, "GET", f"/sessions/{session_id}", query={"to": 0})
+    s = res["session"]
+    block = {
+        "id": s["id"],
+        "title": one_line(s.get("title"), 120),
+        "author": s.get("author"),
+        "remote": s.get("remote"),
+        "branch": branch_label(s, False),
+        "web": deep_link(cfg, s["id"]),
+        "cli": f"hive-mind dump {short_id(s['id'])}",
+    }
+    if args.json:
+        dump_json(block)
+        return
+    print(f"{block['title']} · {block['author']} · {block['remote']} @ {block['branch']}")
+    print(f"web:  {block['web']}")
+    print(f"cli:  {block['cli']}")
 
 
 def cmd_purge(args):
@@ -1149,6 +1280,11 @@ def build_parser():
 
     dr = sub.add_parser("doctor", help="check config, server, token, hook install and last beam")
     dr.set_defaults(fn=cmd_doctor)
+
+    sh = sub.add_parser("share", help="beam this session and print a shareable web + CLI pointer")
+    sh.add_argument("session_id", nargs="?", help="local id prefix; default = the current directory's session")
+    sh.add_argument("--json", action="store_true", help="machine-readable block")
+    sh.set_defaults(fn=cmd_share)
 
     pg = sub.add_parser("purge", help="delete one session; SESSION_ID may be an 8-char prefix")
     pg.add_argument("session_id")

@@ -72,12 +72,13 @@ class HookTest(unittest.TestCase):
         self.assertEqual(first["path"], f"/api/v1/agent-history/sessions/{SESSION}")
         self.assertEqual(first["auth"], "Bearer athmind_testtoken")
         body = first["body"]
-        self.assertEqual(set(body), {"source", "remote", "branch", "cwd", "title", "parentSessionId", "startedAt", "updatedAt", "completed", "inputTokens", "outputTokens", "models", "messages"})
+        self.assertEqual(set(body), {"source", "remote", "branch", "cwd", "title", "parentSessionId", "startedAt", "updatedAt", "completed", "inputTokens", "outputTokens", "models", "spawnDepth", "modelExplicit", "messages"})
         self.assertEqual((body["source"], body["remote"], body["branch"], body["completed"]), ("claude", "github.com/Alvicom/Demo", "main", False))
         self.assertEqual(body["startedAt"], "2026-09-03T10:00:00.000Z")
         self.assertEqual(body["updatedAt"], "2026-09-03T10:00:06+00:00")
         self.assertEqual([m["seq"] for m in body["messages"]], [0, 1, 2, 3, 4])
-        self.assertEqual(set(body["messages"][0]), {"seq", "role", "toolName", "text", "ts"})
+        self.assertEqual(set(body["messages"][0]), {"seq", "role", "toolName", "text", "ts", "branch"})
+        self.assertEqual([m.get("branch") for m in body["messages"]], ["main", None, None, None, None])
         self.assertEqual((body["inputTokens"], body["outputTokens"]), (600, 60))
         state = json.loads((self.state / f"{SESSION}.json").read_text())
         self.assertEqual(state["next_seq"], 5)
@@ -130,15 +131,24 @@ class HookTest(unittest.TestCase):
             json.dumps({"type": "user", "isSidechain": True, "agentId": "abc123", "timestamp": "2026-09-03T11:00:00.000Z", "message": {"role": "user", "content": "do the thing"}}) + "\n"
             + json.dumps({"type": "assistant", "isSidechain": True, "agentId": "abc123", "timestamp": "2026-09-03T11:00:01.000Z", "message": {"role": "assistant", "model": "claude-opus-5", "id": "m9", "usage": {"input_tokens": 7, "output_tokens": 3}, "content": [{"type": "text", "text": "done"}]}}) + "\n"
         )
+        (subagents / "agent-nested.meta.json").write_text(json.dumps({"description": "Nested", "spawnDepth": 2, "parentAgentId": "abc123"}))
+        (subagents / "agent-nested.jsonl").write_text(
+            json.dumps({"type": "user", "isSidechain": True, "agentId": "nested", "timestamp": "2026-09-03T11:01:00.000Z", "message": {"role": "user", "content": "deeper"}}) + "\n"
+            + json.dumps({"type": "assistant", "isSidechain": True, "agentId": "nested", "timestamp": "2026-09-03T11:01:01.000Z", "message": {"role": "assistant", "model": "claude-fable-5-1", "id": "m10", "usage": {"input_tokens": 1, "output_tokens": 1}, "content": [{"type": "text", "text": "ok"}]}}) + "\n"
+        )
         (subagents / "agent-empty.meta.json").write_text(json.dumps({"description": "No text"}))
         (subagents / "agent-empty.jsonl").write_text(json.dumps({"type": "system", "content": "noise"}) + "\n")
         res = self.run_hook("Stop")
         self.assertEqual((res.returncode, res.stderr), (0, ""))
         paths = [r["path"] for r in Stub.requests]
-        self.assertEqual(paths, ["/api/v1/agent-history/sessions/abc123"])
+        self.assertEqual(paths, ["/api/v1/agent-history/sessions/abc123", "/api/v1/agent-history/sessions/nested"])
         child = Stub.requests[0]["body"]
+        nested = Stub.requests[1]["body"]
+        # Nesting is flattened onto the main session; spawnDepth carries the real shape.
+        self.assertEqual((nested["parentSessionId"], nested["spawnDepth"], nested["modelExplicit"]), (SESSION, 2, False))
         self.assertEqual((child["parentSessionId"], child["title"], child["remote"], child["branch"]), (SESSION, "Child task", "github.com/Alvicom/Demo", "main"))
         self.assertEqual(child["models"], ["claude-opus-5"])
+        self.assertEqual((child["spawnDepth"], child["modelExplicit"]), (1, True))
         self.assertEqual((child["inputTokens"], child["outputTokens"]), (7, 3))
         self.assertEqual([(m["role"], m["text"]) for m in child["messages"]], [("user", "do the thing"), ("assistant", "done")])
         state = json.loads((self.state / f"{SESSION}.json").read_text())

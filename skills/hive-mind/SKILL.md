@@ -24,8 +24,11 @@ $M search <terms...>                       # AND-ed terms, grouped by session: h
 $M search <terms...> --flat -C 2           # one line per hit plus neighbour turns
 $M dump <shortId> --around <seq> -C 5      # read the window around a hit
 $M tail [--follow]                         # new turns since the last tail, one line each
+$M share [<shortId>]                       # print this session's shareable pointer
 ```
 
+- **Share this session**: when the user asks to share, send, link or show *this* session to
+  someone, run `$M share` (no id = the current directory's session) and reply with the printed three-line block and nothing else.
 - `today` = `sessions --since today`. `sessions [--since 14d|yesterday|ISO] [--titles] [--limit N]`
   lists newest first; `--titles` drops everything but time, id and title.
 - Search terms are **AND**-ed. `"quoted phrase"` is a phrase, `-term` excludes, `a | b`
@@ -45,8 +48,9 @@ $M tail [--follow]                         # new turns since the last tail, one 
   subagent's report as a `[seq] tool HH:MM Agent result:` line in the parent. Search hits inside
   a child carry `↳<parentShortId>`.
 - Scope: `--project SUBSTR` matches a remote like `github.com/alvicom/x`, `--all` spans every
-  project, `--author A` filters by name/email, `--branch B` is an exact branch match, `--mine`
-  keeps only the caller's own sessions.
+  project, `--author A` filters by name/email, `--branch B` matches any branch the session touched
+  (`dump` prints a `[seq] branch` line at each switch), `--mine` keeps only the caller's own
+  sessions.
 - `$M local [--since 30d]` lists this laptop's transcripts (date, id, turns, beamed marker,
   first prompt); `$M beam <id…>` ships older ones. A beamed session sorts by when the work
   happened, not by when it was sent. `$M doctor` checks config, server, token and hook install.
@@ -60,7 +64,7 @@ $M tail [--follow]                         # new turns since the last tail, one 
 ## Review a colleague's PR
 
 ```bash
-$M sessions --branch <branch> --all          # the sessions behind the diff
+$M sessions --branch <branch> --all          # the sessions behind the diff (any branch they touched)
 $M dump <shortId> --role user --max-msg 300  # prompt outline: what was actually asked
 $M dump <shortId> --tools | head -60         # what was run: tests, suites, fetches
 ```
