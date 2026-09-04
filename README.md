@@ -21,7 +21,7 @@ Stdlib-only Python 3.11+, one file: `hive_mind.py` is both the hook and the CLI.
 3. Put the `hive-mind` command on your PATH ([uv](https://docs.astral.sh/uv/)):
 
 ```bash
-uv tool install git+https://github.com/AlvicomKft/hive-mind   # --force to update later
+uv tool install git+https://github.com/AlvicomKft/hive-mind   # later: uv tool upgrade hive-mind
 ```
 
 4. `hive-mind login --server https://athene.example.com` (the URL you open Athene at). It asks
