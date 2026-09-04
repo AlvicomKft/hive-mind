@@ -10,8 +10,7 @@ Stdlib-only Python 3.11+, one file: `hive_mind.py` is both the hook and the CLI.
 
 ## Install
 
-Plugin (primary — the harness keeps it updated). In Claude Code, Codex the same through its
-plugin UI:
+Plugin (primary — Claude Code keeps it updated; Codex support is parser-only for now):
 
 ```
 /plugin marketplace add AlvicomKft/hive-mind
@@ -35,6 +34,10 @@ uvx --from git+https://github.com/AlvicomKft/hive-mind hive-mind install --harne
 ```
 
 `--dry-run` prints the changes first. `claude` is the only harness this accepts today.
+
+The plugin ships two skills: `/hive-mind:hive-mind` (search and read the team's history,
+with a context-safe workflow: `fetch` a session to disk, `rg` it, `show` only a window) and
+`/hive-mind:hive-share` (print this session's web link and `show` command for a teammate).
 
 Config lands in `~/.config/hive-mind/config.json` (mode 600), outside the plugin
 dir so plugin updates keep it. The hook is silent from then on; it fires on `Stop`
@@ -60,8 +63,10 @@ hive-mind hook --dry-run < event.json                # see what would be sent
 ```
 
 Ids print as 8-char prefixes and every command that takes one accepts a unique prefix.
-`--project SUBSTR` / `--all` widen the scope, `--mine` narrows to your own sessions; `--json` gives raw API output, `--tsv` the same columns
-tab-separated for `cut`/`awk`, `-v` full ids, scores and web links.
+`--project SUBSTR` / `--all` widen the scope, `--mine` narrows to your own sessions. On list and
+search commands `--json` gives raw API output, `--tsv` the same columns tab-separated for
+`cut`/`awk`, `-v` full ids, scores and web links. Bare `show` is bounded (last 30 turns, 600
+chars each) so an agent cannot flood its context; `fetch` + `rg`/`jq` is the way to explore.
 
 ## What is sent, what is not
 
@@ -87,7 +92,6 @@ Escape hatches:
 - `HIVE_MIND=off` in the shell disables the hook.
 - Extra regexes, one per line: `.hive-mind-ignore` at the repo root or `~/.config/hive-mind/ignore`.
 - `hive-mind purge <session-id>` deletes a session you own.
-
 
 State: `~/.local/state/hive-mind/<session-id>.json` (byte offset, next seq, token
 totals) and `hook.log` (failures; the hook always exits 0 and never blocks the harness).
