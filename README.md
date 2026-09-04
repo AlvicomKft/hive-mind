@@ -18,14 +18,18 @@ Stdlib-only Python 3.11+, one file: `hive_mind.py` is both the hook and the CLI.
 /plugin install hive-mind
 ```
 
-3. In a terminal, `hive-mind login --server https://athene.example.com` (the URL you open Athene
-   at). It asks for the token with hidden input, verifies it, and stores both in
+3. Put the `hive-mind` command on your PATH ([uv](https://docs.astral.sh/uv/)):
+
+```bash
+uv tool install git+https://github.com/AlvicomKft/hive-mind   # --force to update later
+```
+
+4. `hive-mind login --server https://athene.example.com` (the URL you open Athene at). It asks
+   for the token with hidden input, verifies it, and stores both in
    `~/.config/hive-mind/config.json` (mode 600). Done: every turn in a git checkout with an
    `origin` remote is beamed from now on, silently.
 
-`hive-mind` on your PATH: `uv tool install git+https://github.com/AlvicomKft/hive-mind`
-(`--force` to update). Without it, the same script is
-`python3 ~/.claude/plugins/marketplaces/hive-mind/hive_mind.py`.
+Without uv, the same command is `python3 ~/.claude/plugins/marketplaces/hive-mind/hive_mind.py`.
 
 Options, only if you need them:
 
