@@ -108,7 +108,7 @@ hive-mind usage --since 3h --mine                    # token burn per session an
 hive-mind share                                      # web link + show command for this session
 hive-mind purge <shortId>                            # something slipped
 hive-mind local --since 30d                          # transcripts on this laptop, beamed or not
-hive-mind beam <shortId>                             # ship an older session, sorted by its own time
+hive-mind beam <shortId> [--force]                   # ship an older session (--force re-ships one the server is missing)
 hive-mind doctor                                     # config, server, token, hook install
 hive-mind hook --dry-run < event.json                # see what would be sent
 ```

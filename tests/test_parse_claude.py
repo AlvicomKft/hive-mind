@@ -73,6 +73,16 @@ class ParseClaudeTest(unittest.TestCase):
         ])
         self.assertEqual((meta["inputTokens"], meta["outputTokens"], meta["cacheReadTokens"], meta["cacheCreationTokens"]), (8, 80, 10000, 720))
 
+    def test_synthetic_turns_carry_no_usage(self):
+        line = json.dumps({"type": "assistant", "timestamp": "2026-09-03T10:00:05.000Z",
+                           "message": {"id": "m3", "role": "assistant", "model": "<synthetic>",
+                                       "content": [{"type": "text", "text": "No response requested."}],
+                                       "usage": {"input_tokens": 0, "output_tokens": 0}}})
+        meta = {}
+        msgs = am.parse_claude([line], meta)
+        self.assertEqual([m.get("usage") for m in msgs], [None])
+        self.assertNotIn("models", meta)
+
     def test_codex_cache_tokens_are_split_out_of_input(self):
         line = '{"timestamp":"2026-08-29T15:26:50.608Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":900,"cache_write_input_tokens":40,"output_tokens":7}}}}'
         meta = {}

@@ -28,6 +28,7 @@ CODEX_SESSIONS = Path("~/.codex/sessions").expanduser()
 API = "/api/v1/agent-history"
 ACCESS_TOKEN = re.compile(r"athmind_[0-9a-f]{40}\Z")
 TOOL_INPUT_CHARS = 200
+CHUNK_MESSAGES = 500
 TITLE_CHARS = 240
 MAX_MODELS = 8
 REDACT_TOOL_INPUT = re.compile(
@@ -247,15 +248,16 @@ def parse_claude(lines, meta, sidechain=False):
             # Streaming repeats one message id across records, each carrying the same usage.
             if usage and msg.get("id") != meta.get("usageMsgId"):
                 meta["usageMsgId"] = msg.get("id")
-                row = {
-                    "model": model,
+                counts = {
                     "input": usage.get("input_tokens") or 0,
                     "output": usage.get("output_tokens") or 0,
                     "cacheRead": usage.get("cache_read_input_tokens") or 0,
                     "cacheCreation": usage.get("cache_creation_input_tokens") or 0,
                 }
                 for field, key in USAGE_TOTALS.items():
-                    meta[key] = meta.get(key, 0) + row[field]
+                    meta[key] = meta.get(key, 0) + counts[field]
+                # The server requires a model on a usage row; `<synthetic>` turns have none.
+                row = {"model": model, **counts} if model else None
         text = "\n".join(texts)
         summary = kind == "user" and bool(rec.get("isCompactSummary"))
         result = None
@@ -437,8 +439,30 @@ def under_roots(cwd):
     return not roots or any(path == Path(r) or Path(r) in path.parents for r in roots)
 
 
-def run_hook(event, dry_run=False):
-    """Returns the number of sessions posted (main + subagents)."""
+def fresh_slot():
+    return {"bytes": 0, "next_seq": 0, "meta": {}}
+
+
+def load_state(state_path, server):
+    """Offsets and seq counters only describe one server: a `login` elsewhere re-ships from 0."""
+    try:
+        state = json.loads(state_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        state = {}
+    if state.get("server") != server:
+        state = {"server": server}
+    return {**fresh_slot(), "children": {}, **state}
+
+
+def config_server():
+    try:
+        return json.loads(CONFIG_PATH.read_text()).get("server", "")
+    except (OSError, json.JSONDecodeError):
+        return ""
+
+
+def run_hook(event, dry_run=False, reset=False, timeout=5):
+    """Returns the number of messages posted (main + subagents)."""
     session_id = event.get("session_id")
     transcript = event.get("transcript_path")
     cwd = event.get("cwd") or os.getcwd()
@@ -448,8 +472,10 @@ def run_hook(event, dry_run=False):
     if not remote or not under_roots(cwd):
         return 0
     state_path = STATE_DIR / f"{session_id}.json"
-    state = json.loads(state_path.read_text()) if state_path.is_file() else {"bytes": 0, "next_seq": 0, "meta": {}}
-    children = state.setdefault("children", {})
+    state = load_state(state_path, config_server())
+    if reset:
+        state = {"server": state["server"], **fresh_slot(), "children": {}}
+    children = state["children"]
     source = detect_source(transcript)
     completed = event.get("hook_event_name") == "SessionEnd"
     patterns = load_patterns(cwd)
@@ -466,7 +492,7 @@ def run_hook(event, dry_run=False):
     if source == "claude":
         for path in subagent_files(transcript, session_id):
             agent_id = path.stem.removeprefix("agent-")
-            slot = children.setdefault(agent_id, {"bytes": 0, "next_seq": 0, "meta": {}})
+            slot = children.setdefault(agent_id, fresh_slot())
             info = subagent_meta(path)
             slot["meta"].setdefault("title", info.get("description"))
             slot["meta"].setdefault("spawnDepth", int(info.get("spawnDepth") or 1))
@@ -480,19 +506,32 @@ def run_hook(event, dry_run=False):
     if dry_run:
         json.dump([p for _, _, (p, _, _) in posts], sys.stdout, indent=2, ensure_ascii=False)
         print()
-        return len(posts)
+        return sum(len(p["messages"]) for _, _, (p, _, _) in posts)
     cfg = load_config()
     STATE_DIR.mkdir(parents=True, exist_ok=True)
+    sent = 0
     for sid, slot, (payload, new_offset, seq) in posts:
-        status, body = request(cfg, "POST", f"/sessions/{sid}", payload, timeout=5)
-        if status != 202:
-            raise RuntimeError(f"unexpected status {status}")
-        last_seq = (body or {}).get("lastSeq")
-        if isinstance(last_seq, int) and last_seq + 1 < seq:
-            log(f"{sid}: server lastSeq={last_seq} behind local next_seq={seq}")
-        slot["bytes"], slot["next_seq"] = new_offset, seq
-        state_path.write_text(json.dumps(state))
-    return len(posts)
+        messages = payload["messages"]
+        # Offsets move only once the whole session is in: seq is derived from file order, so a
+        # half-advanced counter would renumber every message on the retry. The server dedupes
+        # what a failed run already stored.
+        chunks = [messages[i:i + CHUNK_MESSAGES] for i in range(0, len(messages), CHUNK_MESSAGES)] or [[]]
+        for chunk in chunks:
+            status, body = request(cfg, "POST", f"/sessions/{sid}", {**payload, "messages": chunk}, timeout=timeout)
+            if status != 202:
+                raise RuntimeError(f"unexpected status {status}")
+            last_seq = (body or {}).get("lastSeq")
+            stored = chunk[-1]["seq"] if chunk else slot["next_seq"] - 1
+            if stored >= 0 and (not isinstance(last_seq, int) or last_seq < stored):
+                log(f"{sid}: server lastSeq={last_seq} behind {stored}; re-shipping this session from 0 next run")
+                slot.update(fresh_slot())
+                state_path.write_text(json.dumps(state))
+                break
+            sent += len(chunk)
+        else:
+            slot["bytes"], slot["next_seq"] = new_offset, seq
+            state_path.write_text(json.dumps(state))
+    return sent
 
 
 # --- local transcripts ---------------------------------------------------
@@ -602,8 +641,8 @@ def cmd_beam(args):
             "cwd": e["cwd"],
             "hook_event_name": "SessionEnd",
         }
-        posted = run_hook(event, dry_run=args.dry_run)
-        print(f"{short_id(e['id'], args.verbose)}  {e['turns']:5d} turns  {'nothing new' if not posted else f'{posted} session(s) sent'}  {one_line(e['title'], 80)}")
+        posted = run_hook(event, dry_run=args.dry_run, reset=args.force, timeout=30)
+        print(f"{short_id(e['id'], args.verbose)}  {e['turns']:5d} turns  {'nothing new' if not posted else f'{posted} sent'}  {one_line(e['title'], 80)}")
 
 
 # --- doctor --------------------------------------------------------------
@@ -1484,6 +1523,7 @@ def build_parser():
     bm.add_argument("--project", help="remote substring; default = cwd origin remote")
     bm.add_argument("--all", action="store_true", help="every project")
     bm.add_argument("--dry-run", action="store_true", help="print payloads instead of posting")
+    bm.add_argument("--force", action="store_true", help="re-ship the whole transcript, ignoring what was already sent")
     output(bm)
     bm.set_defaults(fn=cmd_beam)
 

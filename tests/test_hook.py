@@ -17,12 +17,26 @@ SECRETS = ["AKIAIOSFODNN7EXAMPLE", "hunter2hunter", "Pa55w0rd", "MIIEowIBAAKCAQE
 
 class Stub(BaseHTTPRequestHandler):
     requests = []
+    last_seq = "auto"
+    fail_from = None
+
+    @classmethod
+    def reset(cls):
+        cls.requests = []
+        cls.last_seq = "auto"
+        cls.fail_from = None
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         Stub.requests.append({"path": self.path, "auth": self.headers.get("Authorization"), "body": body})
+        if Stub.fail_from is not None and len(Stub.requests) > Stub.fail_from:
+            self.send_response(400)
+            self.end_headers()
+            self.wfile.write(b'{"error": "nope"}')
+            return
         seqs = [m["seq"] for r in Stub.requests for m in r["body"]["messages"]]
-        out = json.dumps({"lastSeq": max(seqs) if seqs else None}).encode()
+        last = (max(seqs) if seqs else None) if Stub.last_seq == "auto" else Stub.last_seq
+        out = json.dumps({"lastSeq": last}).encode()
         self.send_response(202)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
@@ -168,6 +182,137 @@ class HookTest(unittest.TestCase):
         state = json.loads((self.state / f"{SESSION}.json").read_text())
         self.assertEqual(state["children"]["abc123"]["next_seq"], 2)
         self.assertEqual(state["children"]["empty"]["next_seq"], 0)
+
+
+class StateTest(unittest.TestCase):
+    """Offsets are per server, and a session lands whole or not at all."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.server = HTTPServer(("127.0.0.1", 0), Stub)
+        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+
+    def setUp(self):
+        Stub.reset()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        home = Path(self.tmp.name)
+        self.repo = home / "repo"
+        self.repo.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main", str(self.repo)], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "remote", "add", "origin", "git@github.com:Alvicom/Demo.git"], check=True)
+        self.state = home / "state"
+        self.config = home / "config.json"
+        self.server_url = f"http://127.0.0.1:{self.server.server_port}"
+        self.config.write_text(json.dumps({"server": self.server_url, "web": "http://app.test", "token": "athmind_testtoken"}))
+        self.transcript = home / f"{SESSION}.jsonl"
+        self.env = {**os.environ, "HOME": str(home), "HIVE_MIND_CONFIG": str(self.config), "HIVE_MIND_STATE_DIR": str(self.state)}
+        self.env.pop("HIVE_MIND", None)
+
+    def run_hook(self, event_name="Stop"):
+        event = {"session_id": SESSION, "transcript_path": str(self.transcript), "cwd": str(self.repo), "hook_event_name": event_name}
+        res = subprocess.run([sys.executable, str(SCRIPT), "hook"], input=json.dumps(event), capture_output=True, text=True, env=self.env)
+        self.assertEqual((res.returncode, res.stdout, res.stderr), (0, "", ""))
+
+    def state_file(self):
+        return json.loads((self.state / f"{SESSION}.json").read_text())
+
+    def turns(self, count):
+        self.transcript.write_text("".join(
+            json.dumps({"type": "user", "cwd": str(self.repo), "sessionId": SESSION, "timestamp": f"2026-09-03T10:00:00.{i:03d}Z", "message": {"role": "user", "content": f"turn {i}"}}) + "\n"
+            for i in range(count)
+        ))
+
+    def test_a_new_server_re_ships_the_session_from_zero(self):
+        self.transcript.write_text(FIXTURE.read_text())
+        self.run_hook()
+        self.assertEqual([m["seq"] for m in Stub.requests[0]["body"]["messages"]], list(range(7)))
+        self.assertEqual((self.state_file()["server"], self.state_file()["next_seq"]), (self.server_url, 7))
+        # Same stub, different origin string: a `login` elsewhere must not resume mid-transcript.
+        elsewhere = self.server_url.replace("127.0.0.1", "localhost")
+        self.config.write_text(json.dumps({"server": elsewhere, "web": "http://app.test", "token": "athmind_testtoken"}))
+        self.run_hook()
+        self.assertEqual([m["seq"] for m in Stub.requests[1]["body"]["messages"]], list(range(7)))
+        self.assertEqual((self.state_file()["server"], self.state_file()["next_seq"]), (elsewhere, 7))
+
+    def test_a_server_missing_messages_resets_the_slot(self):
+        self.transcript.write_text(FIXTURE.read_text())
+        Stub.last_seq = 2
+        self.run_hook()
+        self.assertEqual((self.state_file()["bytes"], self.state_file()["next_seq"], self.state_file()["meta"]), (0, 0, {}))
+        self.assertIn("re-shipping this session from 0", (self.state / "hook.log").read_text())
+        Stub.last_seq = "auto"
+        self.run_hook()
+        self.assertEqual([m["seq"] for m in Stub.requests[1]["body"]["messages"]], list(range(7)))
+        self.assertEqual(self.state_file()["next_seq"], 7)
+
+    def test_long_sessions_post_in_chunks_and_a_failed_chunk_keeps_the_offsets(self):
+        self.turns(1200)
+        Stub.fail_from = 2
+        self.run_hook()
+        sizes = [len(r["body"]["messages"]) for r in Stub.requests]
+        self.assertEqual(sizes[:2], [500, 500])
+        self.assertEqual(len(sizes), 3)
+        self.assertIn("HTTP 400", (self.state / "hook.log").read_text())
+        # Nothing is persisted for a session that did not land whole: the retry renumbers identically.
+        self.assertFalse((self.state / f"{SESSION}.json").is_file())
+        Stub.fail_from = None
+        Stub.requests.clear()
+        self.run_hook()
+        self.assertEqual([len(r["body"]["messages"]) for r in Stub.requests], sizes)
+        seqs = [m["seq"] for r in Stub.requests for m in r["body"]["messages"]]
+        self.assertEqual(seqs, list(range(sum(sizes))))
+        self.assertEqual(self.state_file()["next_seq"], sum(sizes))
+
+
+class BeamTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.server = HTTPServer(("127.0.0.1", 0), Stub)
+        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+
+    def setUp(self):
+        Stub.reset()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        home = Path(self.tmp.name)
+        self.repo = home / "repo"
+        self.repo.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main", str(self.repo)], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "remote", "add", "origin", "git@github.com:Alvicom/Demo.git"], check=True)
+        transcript = home / ".claude" / "projects" / "repo" / f"{SESSION}.jsonl"
+        transcript.parent.mkdir(parents=True)
+        transcript.write_text("".join(
+            json.dumps({"type": "user", "cwd": str(self.repo), "sessionId": SESSION, "timestamp": f"2026-09-03T10:00:0{i}.000Z", "message": {"role": "user", "content": f"turn {i}"}}) + "\n"
+            for i in range(4)
+        ))
+        config = home / "config.json"
+        config.write_text(json.dumps({"server": f"http://127.0.0.1:{self.server.server_port}", "web": "http://app.test", "token": "athmind_testtoken"}))
+        self.env = {**os.environ, "HOME": str(home), "HIVE_MIND_CONFIG": str(config), "HIVE_MIND_STATE_DIR": str(home / "state")}
+        self.env.pop("HIVE_MIND", None)
+
+    def beam(self, *args):
+        res = subprocess.run([sys.executable, str(SCRIPT), "beam", SESSION[:8], *args], capture_output=True, text=True, env=self.env, cwd=self.repo)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        return res.stdout
+
+    def test_beam_reports_what_it_posted_and_force_re_ships(self):
+        self.assertIn("4 sent", self.beam())
+        self.assertEqual(sum(len(r["body"]["messages"]) for r in Stub.requests), 4)
+        self.assertIn("nothing new", self.beam())
+        self.assertEqual(sum(len(r["body"]["messages"]) for r in Stub.requests), 4)
+        self.assertIn("4 sent", self.beam("--force"))
+        self.assertEqual([m["seq"] for m in Stub.requests[-1]["body"]["messages"]], [0, 1, 2, 3])
 
 
 if __name__ == "__main__":
