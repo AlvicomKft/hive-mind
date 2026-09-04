@@ -18,18 +18,19 @@ Stdlib-only Python 3.11+, one file: `hive_mind.py` is both the hook and the CLI.
 /plugin install hive-mind
 ```
 
-3. Put the `hive-mind` command on your PATH ([uv](https://docs.astral.sh/uv/)):
+3. In a terminal, log in with the URL you open Athene at:
 
 ```bash
-uv tool install git+https://github.com/AlvicomKft/hive-mind   # later: uv tool upgrade hive-mind
+python3 ~/.claude/plugins/marketplaces/hive-mind/hive_mind.py login --server https://athene.example.com
 ```
 
-4. `hive-mind login --server https://athene.example.com` (the URL you open Athene at). It asks
-   for the token with hidden input, verifies it, and stores both in
-   `~/.config/hive-mind/config.json` (mode 600). Done: every turn in a git checkout with an
-   `origin` remote is beamed from now on, silently.
+It asks for the token with hidden input, verifies it, and stores both in
+`~/.config/hive-mind/config.json` (mode 600). Done: every turn in a git checkout with an `origin`
+remote is beamed from now on, silently, and the plugin updates with Claude Code.
 
-Without uv, the same command is `python3 ~/.claude/plugins/marketplaces/hive-mind/hive_mind.py`.
+`hive-mind` below stands for that script. If you use the CLI by hand a lot, put it on your PATH
+with `uv tool install git+https://github.com/AlvicomKft/hive-mind` (`uv tool upgrade hive-mind`
+to update; the plugin copy updates on its own).
 
 Options, only if you need them:
 
