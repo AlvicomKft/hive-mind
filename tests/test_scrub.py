@@ -59,6 +59,18 @@ class ScrubTest(unittest.TestCase):
         text = "sha 3f2a9c1e8b7d6f5a4c3b2a1e0d9c8b7a6f5e4d3c uuid 11111111-2222-4333-8444-555555555555 path /home/dev/alvicom/Athene-AI/gateway/src/gateway/api/routers/agent_history.py"
         self.assertEqual(am.scrub(text, self.patterns), text)
 
+    def test_entropy_keeps_paths_and_identifiers(self):
+        for text in [
+            "/home/bezi/.claude/projects/-home-bezi-alvicom-Athene-AI/f8fd369d-056f-41ae-b90e-35432a8f8038.jsonl",
+            "The diff under review is at /tmp/claude-1000/-home-bezi-alvicom-Athene-AI/f8fd369d-056f-41ae-b90e-35432a8f8038/scratchpad/review.diff",
+            "session_01JjWnFSVqKPeW1RiieoRfcr in -home-bezi-alvicom-Athene-AI",
+        ]:
+            self.assertEqual(am.scrub(text, self.patterns), text)
+
+    def test_entropy_still_redacts_token_shapes(self):
+        for text in ["wJalrXUtnFEMI/K7MDENG/bPxRfiCyEXAMPLEKEY", "Zq9vK2mXp7Lr4TnB8wYc3JdF6gHs1AeU5oIiR0kNbVtQxWzM"]:
+            self.assertEqual(am.scrub(text, self.patterns), "[REDACTED:high-entropy]")
+
     def test_custom_ignore_pattern(self):
         patterns = self.patterns + [("custom", re.compile(r"ACME-\d{4}"))]
         self.assertEqual(am.scrub("ticket ACME-1234 done", patterns), "ticket [REDACTED:custom] done")

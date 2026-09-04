@@ -33,8 +33,10 @@ REDACT_TOOL_INPUT = re.compile(
     r"env|printenv|\.env|secret|token|password|credentials|gh auth|\.pem|\.key|\.netrc|\.npmrc|kubeconfig|\.aws/|\.ssh/",
     re.I,
 )
-ENTROPY_CANDIDATE = re.compile(r"[A-Za-z0-9+/=_-]{32,}")
+ENTROPY_CANDIDATE = re.compile(r"(?<![A-Za-z0-9+/=_.~-])[A-Za-z0-9+/=_-]{32,}")
 ENTROPY_MIN = 4.5
+UUID_TOKEN = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z", re.I)
+HEX_TOKEN = re.compile(r"[0-9a-f]{32,64}\Z", re.I)
 
 
 def log(msg):
@@ -132,11 +134,27 @@ def entropy(s):
     return -sum(c / n * math.log2(c / n) for c in counts.values())
 
 
+def high_entropy_secret(tok):
+    # Paths, UUIDs and git SHAs are long and look random too; only a mix of character
+    # classes separates a real credential from an identifier we must keep readable.
+    if UUID_TOKEN.match(tok) or HEX_TOKEN.match(tok):
+        return False
+    if "/" in tok and any(s.isalpha() and s.islower() and len(s) > 2 for s in tok.split("/")):
+        return False
+    classes = (
+        any(c.islower() for c in tok)
+        + any(c.isupper() for c in tok)
+        + any(c.isdigit() for c in tok)
+        + any(c in "+/=" for c in tok)
+    )
+    return classes >= 3 and entropy(tok) > ENTROPY_MIN
+
+
 def scrub(text, patterns):
     for kind, rx in patterns:
         text = rx.sub(f"[REDACTED:{kind}]", text)
     return ENTROPY_CANDIDATE.sub(
-        lambda m: "[REDACTED:high-entropy]" if entropy(m.group()) > ENTROPY_MIN else m.group(), text
+        lambda m: "[REDACTED:high-entropy]" if high_entropy_secret(m.group()) else m.group(), text
     )
 
 
