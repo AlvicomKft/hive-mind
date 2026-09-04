@@ -10,51 +10,29 @@ Stdlib-only Python 3.11+, one file: `hive_mind.py` is both the hook and the CLI.
 
 ## Install
 
-Plugin (primary — Claude Code keeps it updated; Codex support is parser-only for now):
+1. Mint a personal access token on your Athene profile page.
+2. In Claude Code:
 
 ```
 /plugin marketplace add AlvicomKft/hive-mind
 /plugin install hive-mind
 ```
 
-Then, once per laptop, with a personal access token minted on your Athene profile page (the
-URL is the one you open Athene at; the API address is read from its `config.json`):
+3. In a terminal, `hive-mind login --server https://athene.example.com` (the URL you open Athene
+   at). It asks for the token with hidden input, verifies it, and stores both in
+   `~/.config/hive-mind/config.json` (mode 600). Done: every turn in a git checkout with an
+   `origin` remote is beamed from now on, silently.
 
-```bash
-python3 ~/.claude/plugins/marketplaces/hive-mind/hive_mind.py login --server https://athene.example.com
-# or: hive-mind login   (if you alias/symlink the script onto PATH)
-```
+The `hive-mind` command is `python3 ~/.claude/plugins/marketplaces/hive-mind/hive_mind.py`;
+alias it, or use `uvx --from git+https://github.com/AlvicomKft/hive-mind hive-mind`.
 
-Scriptable alternative (no plugin manager): registers the `Stop`/`SessionEnd` hooks in
-`~/.claude/settings.json`, links the skill into `~/.claude/skills/`, logs in and runs `doctor`.
+Options, only if you need them:
 
-```bash
-uvx --from git+https://github.com/AlvicomKft/hive-mind hive-mind install --harness claude \
-    --server https://athene.example.com
-uvx --from git+https://github.com/AlvicomKft/hive-mind hive-mind install --harness claude --uninstall
-```
-
-`--dry-run` prints the changes first. `claude` is the only harness this accepts today.
-
-By default every git checkout with an `origin` remote is beamed. To limit the hook to your work
-folders, pass `--root` (repeatable) to `login` or `install`:
-
-```bash
-hive-mind login --server https://athene.example.com --root ~/alvicom --root ~/work
-```
-
-Sessions started outside those directories stay on your laptop. `doctor` shows the active roots.
-Claude Code's own plugin scopes are the alternative: install at `user` scope for everything, or
-`local`/`project` scope inside a specific checkout (settings discovery stops at the git root, so a
-parent folder like `~/alvicom` cannot be a project scope; that is what `--root` is for).
-
-The plugin ships two skills: `/hive-mind:hive-mind` (search and read the team's history,
-with a context-safe workflow: `fetch` a session to disk, `rg` it, `show` only a window) and
-`/hive-mind:hive-share` (print this session's web link and `show` command for a teammate).
-
-Config lands in `~/.config/hive-mind/config.json` (mode 600), outside the plugin
-dir so plugin updates keep it. The hook is silent from then on; it fires on `Stop`
-and `SessionEnd`, only inside git checkouts that have an `origin` remote.
+- `hive-mind login --root ~/alvicom` (repeatable) beams only checkouts under those folders.
+- `hive-mind install --harness claude --server …` does the same setup without the plugin
+  manager (registers the hooks in `~/.claude/settings.json`, links the skill); `--uninstall`
+  reverts, `--dry-run` shows the changes.
+- `HIVE_MIND=off` in the shell pauses the hook. `hive-mind doctor` checks everything.
 
 ## Use
 
