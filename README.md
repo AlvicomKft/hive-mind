@@ -44,6 +44,9 @@ hive-mind login --server https://athene.example.com --root ~/alvicom --root ~/wo
 ```
 
 Sessions started outside those directories stay on your laptop. `doctor` shows the active roots.
+Claude Code's own plugin scopes are the alternative: install at `user` scope for everything, or
+`local`/`project` scope inside a specific checkout (settings discovery stops at the git root, so a
+parent folder like `~/alvicom` cannot be a project scope; that is what `--root` is for).
 
 The plugin ships two skills: `/hive-mind:hive-mind` (search and read the team's history,
 with a context-safe workflow: `fetch` a session to disk, `rg` it, `show` only a window) and
