@@ -5,16 +5,17 @@ description: "Hand off this session to a fresh chat — use for 'gist', 'wrap th
 
 # gist
 
-Writes a short brief of the session you are in, stores it in the hive as a `gist`-tagged turn, and
-prints it for the user to paste into a new chat. The replacement for `/compact`: the new session
-starts clean and can pull the rest of the history with `hive-mind show` when it needs it.
+Writes a short brief of the session you are in and prints it for the user to paste into a new
+chat. The replacement for `/compact`: the new session starts clean, and pulls whatever else it
+needs out of the hive with `hive-mind show`. Nothing is stored; the only command is reading your
+session id — the brief is your reply.
 
 `${ARGUMENTS}`, if present, is the focus — narrow the brief to that topic. With no argument, cover
 the whole session.
 
 ## Write the brief
 
-Roughly 10-15 lines, telegraphic, no headings, in this order:
+At most 10-15 lines, telegraphic, no headings; shorter is better. In this order:
 
 1. What the work is — the goal, one or two lines.
 2. Decisions made, with the reason where it is not obvious.
@@ -24,26 +25,14 @@ Roughly 10-15 lines, telegraphic, no headings, in this order:
 
 Leave out anything the new session loads by itself: `CLAUDE.md`/`AGENTS.md` rules, memory, skills,
 coding conventions, tool inventories. Leave out narration of what was tried and abandoned unless
-the next step depends on it. Do not write the closing pointer line — `--post` appends it.
+the next step depends on it.
 
-## Store and print it
+End with this line, `<shortId>` being the first 8 characters of `$CLAUDE_CODE_SESSION_ID`
+(`echo "${CLAUDE_CODE_SESSION_ID:0:8}"`):
 
-```bash
-python3 ${CLAUDE_PLUGIN_ROOT}/hive_mind.py gist --post - <<'HIVE_GIST'
-<the brief>
-HIVE_GIST
+```
+Session <shortId>: run `hive-mind show <shortId> --last 20` for the full history. Peer agent names may have changed; re-check ListAgents before messaging any.
 ```
 
-The command prints the stored brief, closing line included. Reply with that output verbatim and
-nothing else, as the last thing in the turn, so the user can copy it in one go. If the command
-exits 1, relay its stderr line instead of the brief — nothing was stored.
-
-## Picking one up
-
-```bash
-python3 ${CLAUDE_PLUGIN_ROOT}/hive_mind.py gist <shortId>
-```
-
-Prints that session's latest gist, or its last assistant turn plus the pointer line when it has
-none. Use it to take over a teammate's session; `hive-mind show <shortId> --last 20` is the next
-step from there.
+Reply with the brief verbatim and nothing else — no preamble, no offer to do more — so the user
+can copy the whole turn in one go.

@@ -124,7 +124,7 @@ class HookTest(unittest.TestCase):
         self.assertFalse((self.state / "hook.log").exists())
 
     def test_a_second_hook_waits_for_the_state_file_lock(self):
-        """Stop runs in the background and `gist --post` posts mid-turn: both write this state."""
+        """Stop runs in the background: a fast next turn starts a second hook on this state file."""
         Stub.requests.clear()
         transcript = Path(self.tmp.name) / f"{LOCK_SESSION}.jsonl"
         transcript.write_text(FIXTURE.read_text())

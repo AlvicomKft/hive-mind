@@ -2,12 +2,12 @@
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "hive-mind",
   "owner": { "name": "Alvicom" },
-  "metadata": { "description": "Athene Hive Mind: shared, searchable Claude Code / Codex session history.", "version": "0.4.0" },
+  "metadata": { "description": "Athene Hive Mind: shared, searchable Claude Code / Codex session history.", "version": "0.4.1" },
   "plugins": [
     {
       "name": "hive-mind",
       "description": "Athene Hive Mind: sync your coding-agent sessions to Athene and search the team's history from the agent.",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "author": { "name": "Alvicom" },
       "source": "./"
     }

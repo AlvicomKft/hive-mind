@@ -190,7 +190,6 @@ _HARNESS_NOISE = (
     "Base directory for this skill",
 )
 COMPACT_SUMMARY = "compact-summary"
-GIST = "gist"
 AGENT_SPAWN = "Agent"
 AGENT_RESULT = "Agent result"
 AGENT_RESULT_CHARS = 4000
@@ -391,10 +390,10 @@ def aware_iso(ts):
     return parsed.isoformat() if parsed.tzinfo else None
 
 
-def build_payload(path, slot, base, patterns, *, sidechain, parent_session_id, completed, appended=()):
+def build_payload(path, slot, base, patterns, *, sidechain, parent_session_id, completed):
     lines, new_offset = read_new_lines(path, slot["bytes"])
     meta = slot["meta"]
-    raw = (parse_claude(lines, meta, True) if sidechain else PARSERS[base["source"]](lines, meta)) + list(appended)
+    raw = parse_claude(lines, meta, True) if sidechain else PARSERS[base["source"]](lines, meta)
     if not raw and not (completed and slot["next_seq"]):
         return None
     if sidechain and not slot["next_seq"] and not any(m["role"] in ("user", "assistant") for m in raw):
@@ -460,8 +459,8 @@ def load_state(state_path, server):
 
 @contextmanager
 def state_lock(session_id):
-    """The Stop hook runs in the background and `gist --post` posts from inside a turn, so two
-    hook processes on one state file is a normal path; a lost update renumbers or drops messages."""
+    """The Stop hook posts in the background, so a fast next turn can start a second one before the
+    first has written its offsets; a lost update renumbers or drops messages."""
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     with open(STATE_DIR / f"{session_id}.lock", "w") as f:
         fcntl.flock(f, fcntl.LOCK_EX)
@@ -475,7 +474,7 @@ def config_server():
         return ""
 
 
-def run_hook(event, dry_run=False, reset=False, timeout=5, appended=()):
+def run_hook(event, dry_run=False, reset=False, timeout=5):
     """Returns the number of messages posted (main + subagents)."""
     session_id = event.get("session_id")
     transcript = event.get("transcript_path")
@@ -501,7 +500,7 @@ def run_hook(event, dry_run=False, reset=False, timeout=5, appended=()):
             "cwd": cwd,
         }
         posts = []
-        main = build_payload(transcript, state, base, patterns, sidechain=False, parent_session_id=state["meta"].get("parentSessionId"), completed=completed, appended=appended)
+        main = build_payload(transcript, state, base, patterns, sidechain=False, parent_session_id=state["meta"].get("parentSessionId"), completed=completed)
         if main:
             posts.append((session_id, state, main))
         if source == "claude":
@@ -829,7 +828,6 @@ def cmd_install(args):
 # --- cli -----------------------------------------------------------------
 
 SHORT_ID = 8
-TAG_LABELS = {COMPACT_SUMMARY: "summary", GIST: "gist"}
 TAIL_LINE_CHARS = 200
 TAIL_MAX_SESSIONS = 10
 TAIL_MAX_TURNS = 40
@@ -1030,8 +1028,7 @@ def parent_mark(h):
 
 
 def hit_role(h):
-    label = TAG_LABELS.get(h.get("toolName"))
-    return f"[{label}]" if label else h.get("role")
+    return "[summary]" if h.get("toolName") == COMPACT_SUMMARY else h.get("role")
 
 
 def print_hits(cfg, args, hits):
@@ -1281,7 +1278,7 @@ def format_message(m, max_msg, spawned=None):
             arrow = f" → {short_id(child)}" if child else ""
             return f"[{m['seq']}] agent {stamp}  {one_line(body, 160)}{arrow}"
         return f"[{m['seq']}] tool  {stamp}  {name}: {one_line(body, 200)}"
-    label = TAG_LABELS.get(m.get("toolName")) or m["role"]
+    label = "summary" if m.get("toolName") == COMPACT_SUMMARY else m["role"]
     return f"[{m['seq']}] {label}  {stamp}\n{text}\n"
 
 
@@ -1331,46 +1328,6 @@ def cmd_share(args):
     print(f"{block['title']} · {block['author']} · {block['remote']} @ {block['branch']}")
     print(f"web:  {block['web']}")
     print(f"cli:  {block['cli']}")
-
-
-def gist_closing(session_id):
-    short = short_id(session_id)
-    return (
-        f"Session {short}: run `hive-mind show {short} --last 20` for the full history. "
-        "Peer agent names may have changed; re-check ListAgents before messaging any."
-    )
-
-
-def post_gist(args):
-    entry, session_id = current_session()
-    body = sys.stdin.read() if args.post == "-" else Path(args.post).read_text()
-    if not body.strip():
-        sys.exit("empty gist")
-    text = f"{body.strip()}\n\n{gist_closing(session_id)}"
-    event = {"session_id": session_id, "transcript_path": entry["path"], "cwd": entry["cwd"]}
-    message = {"role": "assistant", "toolName": GIST, "text": text, "ts": datetime.now(timezone.utc).isoformat()}
-    if not run_hook(event, timeout=30, appended=[message]):
-        sys.exit("the gist was not stored; `hive-mind doctor` says why")
-    print(text)
-
-
-def cmd_gist(args):
-    if args.post:
-        post_gist(args)
-        return
-    cfg = load_config()
-    _, session_id = current_session(args.session_id)
-    s, path, _, _, _ = fetch_session(cfg, session_id)
-    with path.open() as f:
-        rows = [json.loads(line) for line in f]
-    if stored := [r for r in rows if r.get("toolName") == GIST]:
-        print(stored[-1]["text"])
-        return
-    replies = [r for r in rows if r["role"] == "assistant"]
-    if not replies:
-        sys.exit(f"{short_id(s['id'])} has no assistant turns yet")
-    print(replies[-1].get("text") or "")
-    print(f"\n{gist_closing(s['id'])}")
 
 
 def cmd_purge(args):
@@ -1607,11 +1564,6 @@ def build_parser():
     sh.add_argument("session_id", nargs="?", help="local id prefix; default = the current directory's session")
     sh.add_argument("--json", action="store_true", help="machine-readable block")
     sh.set_defaults(fn=cmd_share)
-
-    gi = sub.add_parser("gist", help="print a session's latest gist; --post stores one for this session")
-    gi.add_argument("session_id", nargs="?", help="local id prefix; default = the current directory's session")
-    gi.add_argument("--post", metavar="FILE", help="store FILE (- for stdin) as this session's gist, then print it back")
-    gi.set_defaults(fn=cmd_gist)
 
     pg = sub.add_parser("purge", help="delete one session; SESSION_ID may be an 8-char prefix")
     pg.add_argument("session_id")

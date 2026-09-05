@@ -91,12 +91,12 @@ runs in their own terminal. Read-only; the session is already beamed.
 
 ### `/hive-mind:gist`
 
-Replaces `/compact`. The agent writes a 10-15 line brief of the session — goal, decisions, what is
-in flight, next step, a handful of file references — stores it in the hive as a `gist`-tagged turn
-and prints it. You paste it into a new chat and keep working with a clean context; the new session
-pulls whatever else it needs with `hive-mind show`. `/hive-mind:gist <topic>` narrows the brief to
-that topic. Conventions the next session loads anyway (`CLAUDE.md`, memory, skills) are left out on
-purpose.
+Replaces `/compact`. The agent writes a short brief of the session — goal, decisions, what is in
+flight, next step, a handful of file references, and the `show` command for the session it came
+from — and prints it as its whole reply. You paste it into a new chat and keep working with a clean
+context; the new session pulls whatever else it needs with `hive-mind show`. Nothing is stored and
+no command runs, it is a paste helper. `/hive-mind:gist <topic>` narrows the brief to that topic.
+Conventions the next session loads anyway (`CLAUDE.md`, memory, skills) are left out on purpose.
 
 ### `/hive-mind:setup`
 
@@ -116,8 +116,6 @@ hive-mind show <shortId> --last 10                   # render the final turns (b
 hive-mind tail --since today                         # today's turns across the project (bare tail = only what is new)
 hive-mind usage --since 3h --mine                    # token burn per session and model in a window
 hive-mind share                                      # web link + show command for this session
-hive-mind gist <shortId>                             # that session's latest gist (or its last reply)
-hive-mind gist --post -                              # store a brief for this session, read from stdin
 hive-mind purge <shortId>                            # something slipped
 hive-mind local --since 30d                          # transcripts on this laptop, beamed or not
 hive-mind beam <shortId> [--force]                   # ship an older session (--force re-ships one the server is missing)
@@ -163,8 +161,8 @@ hive-mind show <shortId> --last 10
 /hive-mind:gist
 ```
 
-Paste the printed brief into a new chat. To pick up where a teammate stopped, `hive-mind gist
-<shortId>` prints their brief — or their last reply when they never wrote one.
+Paste the printed brief into a new chat. To pick up where someone stopped instead, the brief's
+last line is the `hive-mind show <shortId> --last 20` that reads the session back.
 
 ### Check where the tokens went
 
@@ -234,7 +232,7 @@ PATH (`uv tool upgrade hive-mind` to update).
 ### Where does it keep state?
 
 `~/.local/state/hive-mind/<session-id>.json` (byte offset, next seq, token totals), a `.lock`
-beside it so a background Stop hook and a `gist --post` cannot renumber each other, and `hook.log`
+beside it so two background Stop hooks cannot renumber each other, and `hook.log`
 (failures; the hook always exits 0 and never blocks the harness). Fetched sessions cache under
 `~/.cache/hive-mind/sessions/<id>.jsonl`. Env overrides: `HIVE_MIND_CONFIG`,
 `HIVE_MIND_STATE_DIR`, `HIVE_MIND_CACHE_DIR`.
