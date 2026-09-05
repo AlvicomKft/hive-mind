@@ -3,6 +3,7 @@ import json
 import tempfile
 import unittest
 from contextlib import redirect_stdout, redirect_stderr
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -12,7 +13,17 @@ A = "aaaaaaaa-1111-4111-8111-111111111111"
 B = "bbbbbbbb-2222-4222-8222-222222222222"
 
 
-def hhmm(ts="2026-09-04T10:00:00Z"):
+def noon(days_ago=0):
+    """`--since today` cuts at local midnight, so fixtures pinned to a calendar date go stale overnight."""
+    local = datetime.now().astimezone().replace(hour=12, minute=0, second=0, microsecond=0) - timedelta(days=days_ago)
+    return local.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+TODAY = noon()
+YESTERDAY = noon(1)
+
+
+def hhmm(ts=TODAY):
     return am.local_time(ts, "%H:%M")
 
 
@@ -58,26 +69,26 @@ class TailTest(unittest.TestCase):
         return out.getvalue().splitlines(), err.getvalue()
 
     def test_first_run_sets_the_cursor_and_prints_nothing(self):
-        turns = [turn(i, "2026-09-04T10:00:00Z") for i in range(3)]
+        turns = [turn(i, TODAY) for i in range(3)]
         lines, err = self.tail([(session(A, turns), turns)])
         self.assertEqual(lines, [])
         self.assertIn("--since today", err)
         self.assertEqual(json.loads((self.state / "tail-r.json").read_text())[A], 3)
 
     def test_since_bypasses_the_cursor(self):
-        turns = [turn(0, "2026-09-03T10:00:00Z"), turn(1, "2026-09-04T10:00:00Z")]
+        turns = [turn(0, YESTERDAY), turn(1, TODAY)]
         lines, _ = self.tail([(session(A, turns), turns)], "--since", "today")
         self.assertEqual([l for l in lines if not l.startswith("#")], [f"{hhmm()} user: turn 1"])
 
     def test_bounded_to_limit_with_a_skipped_marker(self):
-        turns = [turn(i, "2026-09-04T10:00:00Z") for i in range(5)]
+        turns = [turn(i, TODAY) for i in range(5)]
         lines, err = self.tail([(session(A, turns), turns)], "--since", "today", "--limit", "2")
         self.assertIn("+3 older turns skipped", err)
         self.assertEqual([l for l in lines if not l.startswith("#")], [f"{hhmm()} user: turn 3", f"{hhmm()} user: turn 4"])
 
     def test_own_session_is_excluded_unless_self(self):
-        ta = [turn(0, "2026-09-04T10:00:00Z", text="theirs")]
-        tb = [turn(0, "2026-09-04T10:00:00Z", text="mine")]
+        ta = [turn(0, TODAY, text="theirs")]
+        tb = [turn(0, TODAY, text="mine")]
         rows = [(session(A, ta), ta), (session(B, tb, title="own"), tb)]
         lines, _ = self.tail(rows, "--since", "today")
         self.assertEqual([l for l in lines if not l.startswith("#")], [f"{hhmm()} user: theirs"])
@@ -85,14 +96,14 @@ class TailTest(unittest.TestCase):
         self.assertIn(f"{hhmm()} user: mine", lines)
 
     def test_grouped_header_per_session(self):
-        ta = [turn(0, "2026-09-04T10:00:00Z")]
+        ta = [turn(0, TODAY)]
         lines, _ = self.tail([(session(A, ta, title="a title", author="Ann"), ta)], "--since", "today")
         self.assertEqual(lines[0], "# aaaaaaaa Ann · a title · main")
 
     def test_tsv_carries_the_timestamp(self):
-        ta = [turn(7, "2026-09-04T10:00:00Z")]
+        ta = [turn(7, TODAY)]
         lines, _ = self.tail([(session(A, ta), ta)], "--since", "today", "--tsv")
-        self.assertEqual(lines[0].split("\t")[:3], ["aaaaaaaa", "7", "2026-09-04T10:00:00Z"])
+        self.assertEqual(lines[0].split("\t")[:3], ["aaaaaaaa", "7", TODAY])
 
 
 if __name__ == "__main__":
