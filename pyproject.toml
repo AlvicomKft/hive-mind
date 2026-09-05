@@ -1,6 +1,6 @@
 [project]
 name = "hive-mind"
-version = "0.3.2"
+version = "0.4.0"
 description = "Athene Hive Mind: shared, searchable Claude Code / Codex session history: hook, CLI and agent skill."
 readme = "README.md"
 license = { file = "LICENSE" }

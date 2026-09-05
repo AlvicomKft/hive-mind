@@ -1,3 +1,4 @@
+import fcntl
 import json
 import os
 import subprocess
@@ -12,6 +13,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "hive_mind.py"
 FIXTURE = ROOT / "tests" / "fixtures" / "claude_session.jsonl"
 SESSION = "11111111-2222-4333-8444-555555555555"
+LOCK_SESSION = "99999999-2222-4333-8444-555555555555"
 SECRETS = ["AKIAIOSFODNN7EXAMPLE", "hunter2hunter", "Pa55w0rd", "MIIEowIBAAKCAQEA7", "athmind_0123456789abcdef", "Zq9vK2mXp7Lr4TnB8wYc3JdF6gHs1AeU5oIiR0kNbVtQxWzM", "wJalrXUtnFEMI", "xoxp-9876543210", ".aws/credentials"]
 
 
@@ -120,6 +122,25 @@ class HookTest(unittest.TestCase):
         for s in SECRETS:
             self.assertNotIn(s, sent, s)
         self.assertFalse((self.state / "hook.log").exists())
+
+    def test_a_second_hook_waits_for_the_state_file_lock(self):
+        """Stop runs in the background and `gist --post` posts mid-turn: both write this state."""
+        Stub.requests.clear()
+        transcript = Path(self.tmp.name) / f"{LOCK_SESSION}.jsonl"
+        transcript.write_text(FIXTURE.read_text())
+        event = {"session_id": LOCK_SESSION, "transcript_path": str(transcript), "cwd": str(self.repo), "hook_event_name": "Stop"}
+        self.state.mkdir(parents=True, exist_ok=True)
+        with open(self.state / f"{LOCK_SESSION}.lock", "w") as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            second = subprocess.Popen([sys.executable, str(SCRIPT), "hook"], stdin=subprocess.PIPE, text=True, env=self.env)
+            second.stdin.write(json.dumps(event))
+            second.stdin.close()
+            with self.assertRaises(subprocess.TimeoutExpired):
+                second.wait(timeout=2)
+            self.assertEqual(Stub.requests, [])
+        self.assertEqual(second.wait(timeout=15), 0)
+        self.assertEqual(len(Stub.requests), 1)
+        self.assertEqual(Stub.requests[0]["path"], f"/api/v1/agent-history/sessions/{LOCK_SESSION}")
 
     def test_dry_run_and_off_and_non_git(self):
         n = len(Stub.requests)

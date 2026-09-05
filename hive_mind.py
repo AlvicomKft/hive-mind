@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Hive Mind: ships coding-agent transcripts to Athene (hook) and searches them (CLI)."""
 import argparse
+import fcntl
 import getpass
 import json
 import math
@@ -12,6 +13,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -24,6 +26,7 @@ CLAUDE_PROJECTS = Path("~/.claude/projects").expanduser()
 CLAUDE_SETTINGS = Path("~/.claude/settings.json").expanduser()
 CLAUDE_SKILLS = Path("~/.claude/skills").expanduser()
 HOOK_EVENTS = ("Stop", "SessionEnd")
+SESSION_ID_ENV = "CLAUDE_CODE_SESSION_ID"
 CODEX_SESSIONS = Path("~/.codex/sessions").expanduser()
 API = "/api/v1/agent-history"
 ACCESS_TOKEN = re.compile(r"athmind_[0-9a-f]{40}\Z")
@@ -187,6 +190,7 @@ _HARNESS_NOISE = (
     "Base directory for this skill",
 )
 COMPACT_SUMMARY = "compact-summary"
+GIST = "gist"
 AGENT_SPAWN = "Agent"
 AGENT_RESULT = "Agent result"
 AGENT_RESULT_CHARS = 4000
@@ -387,10 +391,10 @@ def aware_iso(ts):
     return parsed.isoformat() if parsed.tzinfo else None
 
 
-def build_payload(path, slot, base, patterns, *, sidechain, parent_session_id, completed):
+def build_payload(path, slot, base, patterns, *, sidechain, parent_session_id, completed, appended=()):
     lines, new_offset = read_new_lines(path, slot["bytes"])
     meta = slot["meta"]
-    raw = parse_claude(lines, meta, True) if sidechain else PARSERS[base["source"]](lines, meta)
+    raw = (parse_claude(lines, meta, True) if sidechain else PARSERS[base["source"]](lines, meta)) + list(appended)
     if not raw and not (completed and slot["next_seq"]):
         return None
     if sidechain and not slot["next_seq"] and not any(m["role"] in ("user", "assistant") for m in raw):
@@ -454,6 +458,16 @@ def load_state(state_path, server):
     return {**fresh_slot(), "children": {}, **state}
 
 
+@contextmanager
+def state_lock(session_id):
+    """The Stop hook runs in the background and `gist --post` posts from inside a turn, so two
+    hook processes on one state file is a normal path; a lost update renumbers or drops messages."""
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    with open(STATE_DIR / f"{session_id}.lock", "w") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        yield
+
+
 def config_server():
     try:
         return json.loads(CONFIG_PATH.read_text()).get("server", "")
@@ -461,7 +475,7 @@ def config_server():
         return ""
 
 
-def run_hook(event, dry_run=False, reset=False, timeout=5):
+def run_hook(event, dry_run=False, reset=False, timeout=5, appended=()):
     """Returns the number of messages posted (main + subagents)."""
     session_id = event.get("session_id")
     transcript = event.get("transcript_path")
@@ -471,67 +485,67 @@ def run_hook(event, dry_run=False, reset=False, timeout=5):
     remote = cwd_remote(cwd)
     if not remote or not under_roots(cwd):
         return 0
-    state_path = STATE_DIR / f"{session_id}.json"
-    state = load_state(state_path, config_server())
-    if reset:
-        state = {"server": state["server"], **fresh_slot(), "children": {}}
-    children = state["children"]
-    source = detect_source(transcript)
-    completed = event.get("hook_event_name") == "SessionEnd"
-    patterns = load_patterns(cwd)
-    base = {
-        "source": source,
-        "remote": remote,
-        "branch": git(cwd, "symbolic-ref", "--short", "HEAD"),
-        "cwd": cwd,
-    }
-    posts = []
-    main = build_payload(transcript, state, base, patterns, sidechain=False, parent_session_id=state["meta"].get("parentSessionId"), completed=completed)
-    if main:
-        posts.append((session_id, state, main))
-    if source == "claude":
-        for path in subagent_files(transcript, session_id):
-            agent_id = path.stem.removeprefix("agent-")
-            slot = children.setdefault(agent_id, fresh_slot())
-            info = subagent_meta(path)
-            slot["meta"].setdefault("title", info.get("description"))
-            slot["meta"].setdefault("spawnDepth", int(info.get("spawnDepth") or 1))
-            if info:
-                slot["meta"]["modelExplicit"] = bool(info.get("model"))
-            built = build_payload(path, slot, base, patterns, sidechain=True, parent_session_id=session_id, completed=completed)
-            if built:
-                posts.append((agent_id, slot, built))
-    if not posts:
-        return 0
-    if dry_run:
-        json.dump([p for _, _, (p, _, _) in posts], sys.stdout, indent=2, ensure_ascii=False)
-        print()
-        return sum(len(p["messages"]) for _, _, (p, _, _) in posts)
-    cfg = load_config()
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    sent = 0
-    for sid, slot, (payload, new_offset, seq) in posts:
-        messages = payload["messages"]
-        # Offsets move only once the whole session is in: seq is derived from file order, so a
-        # half-advanced counter would renumber every message on the retry. The server dedupes
-        # what a failed run already stored.
-        chunks = [messages[i:i + CHUNK_MESSAGES] for i in range(0, len(messages), CHUNK_MESSAGES)] or [[]]
-        for chunk in chunks:
-            status, body = request(cfg, "POST", f"/sessions/{sid}", {**payload, "messages": chunk}, timeout=timeout)
-            if status != 202:
-                raise RuntimeError(f"unexpected status {status}")
-            last_seq = (body or {}).get("lastSeq")
-            stored = chunk[-1]["seq"] if chunk else slot["next_seq"] - 1
-            if stored >= 0 and (not isinstance(last_seq, int) or last_seq < stored):
-                log(f"{sid}: server lastSeq={last_seq} behind {stored}; re-shipping this session from 0 next run")
-                slot.update(fresh_slot())
+    with state_lock(session_id):
+        state_path = STATE_DIR / f"{session_id}.json"
+        state = load_state(state_path, config_server())
+        if reset:
+            state = {"server": state["server"], **fresh_slot(), "children": {}}
+        children = state["children"]
+        source = detect_source(transcript)
+        completed = event.get("hook_event_name") == "SessionEnd"
+        patterns = load_patterns(cwd)
+        base = {
+            "source": source,
+            "remote": remote,
+            "branch": git(cwd, "symbolic-ref", "--short", "HEAD"),
+            "cwd": cwd,
+        }
+        posts = []
+        main = build_payload(transcript, state, base, patterns, sidechain=False, parent_session_id=state["meta"].get("parentSessionId"), completed=completed, appended=appended)
+        if main:
+            posts.append((session_id, state, main))
+        if source == "claude":
+            for path in subagent_files(transcript, session_id):
+                agent_id = path.stem.removeprefix("agent-")
+                slot = children.setdefault(agent_id, fresh_slot())
+                info = subagent_meta(path)
+                slot["meta"].setdefault("title", info.get("description"))
+                slot["meta"].setdefault("spawnDepth", int(info.get("spawnDepth") or 1))
+                if info:
+                    slot["meta"]["modelExplicit"] = bool(info.get("model"))
+                built = build_payload(path, slot, base, patterns, sidechain=True, parent_session_id=session_id, completed=completed)
+                if built:
+                    posts.append((agent_id, slot, built))
+        if not posts:
+            return 0
+        if dry_run:
+            json.dump([p for _, _, (p, _, _) in posts], sys.stdout, indent=2, ensure_ascii=False)
+            print()
+            return sum(len(p["messages"]) for _, _, (p, _, _) in posts)
+        cfg = load_config()
+        sent = 0
+        for sid, slot, (payload, new_offset, seq) in posts:
+            messages = payload["messages"]
+            # Offsets move only once the whole session is in: seq is derived from file order, so a
+            # half-advanced counter would renumber every message on the retry. The server dedupes
+            # what a failed run already stored.
+            chunks = [messages[i:i + CHUNK_MESSAGES] for i in range(0, len(messages), CHUNK_MESSAGES)] or [[]]
+            for chunk in chunks:
+                status, body = request(cfg, "POST", f"/sessions/{sid}", {**payload, "messages": chunk}, timeout=timeout)
+                if status != 202:
+                    raise RuntimeError(f"unexpected status {status}")
+                last_seq = (body or {}).get("lastSeq")
+                stored = chunk[-1]["seq"] if chunk else slot["next_seq"] - 1
+                if stored >= 0 and (not isinstance(last_seq, int) or last_seq < stored):
+                    log(f"{sid}: server lastSeq={last_seq} behind {stored}; re-shipping this session from 0 next run")
+                    slot.update(fresh_slot())
+                    state_path.write_text(json.dumps(state))
+                    break
+                sent += len(chunk)
+            else:
+                slot["bytes"], slot["next_seq"] = new_offset, seq
                 state_path.write_text(json.dumps(state))
-                break
-            sent += len(chunk)
-        else:
-            slot["bytes"], slot["next_seq"] = new_offset, seq
-            state_path.write_text(json.dumps(state))
-    return sent
+        return sent
 
 
 # --- local transcripts ---------------------------------------------------
@@ -815,6 +829,7 @@ def cmd_install(args):
 # --- cli -----------------------------------------------------------------
 
 SHORT_ID = 8
+TAG_LABELS = {COMPACT_SUMMARY: "summary", GIST: "gist"}
 TAIL_LINE_CHARS = 200
 TAIL_MAX_SESSIONS = 10
 TAIL_MAX_TURNS = 40
@@ -1015,7 +1030,8 @@ def parent_mark(h):
 
 
 def hit_role(h):
-    return "[summary]" if h.get("toolName") == COMPACT_SUMMARY else h.get("role")
+    label = TAG_LABELS.get(h.get("toolName"))
+    return f"[{label}]" if label else h.get("role")
 
 
 def print_hits(cfg, args, hits):
@@ -1265,7 +1281,7 @@ def format_message(m, max_msg, spawned=None):
             arrow = f" → {short_id(child)}" if child else ""
             return f"[{m['seq']}] agent {stamp}  {one_line(body, 160)}{arrow}"
         return f"[{m['seq']}] tool  {stamp}  {name}: {one_line(body, 200)}"
-    label = "summary" if m.get("toolName") == COMPACT_SUMMARY else m["role"]
+    label = TAG_LABELS.get(m.get("toolName")) or m["role"]
     return f"[{m['seq']}] {label}  {stamp}\n{text}\n"
 
 
@@ -1279,16 +1295,24 @@ def beamed_here(cwd):
     return here[0] if here else None
 
 
+def current_session(session_id=None):
+    """A planner and a worker session often share one directory, so the id the harness exports
+    beats `beamed_here`, which can only guess at the most recently beamed one."""
+    if session_id:
+        entry = next((e for e in scan_local(None, None) if e["id"].startswith(session_id)), None)
+        return entry, entry["id"] if entry else session_id
+    if live := os.environ.get(SESSION_ID_ENV):
+        entry = next((e for e in scan_local(None, None) if e["id"] == live), None)
+        if entry:
+            return entry, entry["id"]
+    entry = beamed_here(os.getcwd())
+    if not entry:
+        sys.exit("no beamed session for this directory; run `hive-mind local` to pick one")
+    return entry, entry["id"]
+
+
 def cmd_share(args):
-    cwd = os.getcwd()
-    if args.session_id:
-        entry = next((e for e in scan_local(None, None) if e["id"].startswith(args.session_id)), None)
-        session_id = entry["id"] if entry else args.session_id
-    else:
-        entry = beamed_here(cwd)
-        if not entry:
-            sys.exit("no beamed session for this directory; run `hive-mind local` to pick one")
-        session_id = entry["id"]
+    _, session_id = current_session(args.session_id)
     cfg = load_config()
     _, res = request(cfg, "GET", f"/sessions/{session_id}", query={"to": 0})
     s = res["session"]
@@ -1307,6 +1331,46 @@ def cmd_share(args):
     print(f"{block['title']} · {block['author']} · {block['remote']} @ {block['branch']}")
     print(f"web:  {block['web']}")
     print(f"cli:  {block['cli']}")
+
+
+def gist_closing(session_id):
+    short = short_id(session_id)
+    return (
+        f"Session {short}: run `hive-mind show {short} --last 20` for the full history. "
+        "Peer agent names may have changed; re-check ListAgents before messaging any."
+    )
+
+
+def post_gist(args):
+    entry, session_id = current_session()
+    body = sys.stdin.read() if args.post == "-" else Path(args.post).read_text()
+    if not body.strip():
+        sys.exit("empty gist")
+    text = f"{body.strip()}\n\n{gist_closing(session_id)}"
+    event = {"session_id": session_id, "transcript_path": entry["path"], "cwd": entry["cwd"]}
+    message = {"role": "assistant", "toolName": GIST, "text": text, "ts": datetime.now(timezone.utc).isoformat()}
+    if not run_hook(event, timeout=30, appended=[message]):
+        sys.exit("the gist was not stored; `hive-mind doctor` says why")
+    print(text)
+
+
+def cmd_gist(args):
+    if args.post:
+        post_gist(args)
+        return
+    cfg = load_config()
+    _, session_id = current_session(args.session_id)
+    s, path, _, _, _ = fetch_session(cfg, session_id)
+    with path.open() as f:
+        rows = [json.loads(line) for line in f]
+    if stored := [r for r in rows if r.get("toolName") == GIST]:
+        print(stored[-1]["text"])
+        return
+    replies = [r for r in rows if r["role"] == "assistant"]
+    if not replies:
+        sys.exit(f"{short_id(s['id'])} has no assistant turns yet")
+    print(replies[-1].get("text") or "")
+    print(f"\n{gist_closing(s['id'])}")
 
 
 def cmd_purge(args):
@@ -1543,6 +1607,11 @@ def build_parser():
     sh.add_argument("session_id", nargs="?", help="local id prefix; default = the current directory's session")
     sh.add_argument("--json", action="store_true", help="machine-readable block")
     sh.set_defaults(fn=cmd_share)
+
+    gi = sub.add_parser("gist", help="print a session's latest gist; --post stores one for this session")
+    gi.add_argument("session_id", nargs="?", help="local id prefix; default = the current directory's session")
+    gi.add_argument("--post", metavar="FILE", help="store FILE (- for stdin) as this session's gist, then print it back")
+    gi.set_defaults(fn=cmd_gist)
 
     pg = sub.add_parser("purge", help="delete one session; SESSION_ID may be an 8-char prefix")
     pg.add_argument("session_id")

@@ -47,7 +47,8 @@ $M usage --since 3h [--mine]               # token burn per session and model ov
   [N agents] [Σ] title`, then `  ↳ <first sentence of the latest assistant reply>`. `-v` adds
   `  › <latest user prompt>` above the reply. `Σ` marks a session that has a compaction summary
   (`show` renders the summary itself); `--titles` keeps the one-line time/id/title form.
-  Search hits on a compaction summary are labelled `[summary]`.
+  Search hits on a compaction summary are labelled `[summary]`, hits on a `/hive-mind:gist`
+  handoff brief `[gist]`; `$M gist <shortId>` prints a session's latest brief on its own.
 - `--sort time` on `search` returns one chronology across sessions (implies `--flat`).
 - Grouped search output is the default: one line per session ordered by hit count, best snippet
   indented. Use `--flat` when you want every hit.

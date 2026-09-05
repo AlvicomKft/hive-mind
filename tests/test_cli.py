@@ -3,6 +3,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -12,6 +13,10 @@ ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "hive_mind.py"
 HOOK_EVENTS = ("Stop", "SessionEnd")
 SHARE_SESSION = "11111111-2222-4333-8444-555555555555"
+GIST_SESSION = "22222222-2222-4333-8444-555555555555"
+STORED_GIST_SESSION = "33333333-2222-4333-8444-555555555555"
+NO_GIST_SESSION = "44444444-2222-4333-8444-555555555555"
+OTHER_SESSION = "55555555-2222-4333-8444-555555555555"
 
 
 class Stub(BaseHTTPRequestHandler):
@@ -60,6 +65,7 @@ class CliTest(unittest.TestCase):
         config = tmp / "config.json"
         config.write_text(json.dumps({"server": f"http://127.0.0.1:{cls.server.server_port}", "web": "http://app.test", "token": "athmind_testtoken"}))
         cls.env = {**os.environ, "HIVE_MIND_CONFIG": str(config), "HIVE_MIND_STATE_DIR": str(tmp / "state"), "HOME": str(tmp)}
+        cls.env.pop("CLAUDE_CODE_SESSION_ID", None)
 
     @classmethod
     def tearDownClass(cls):
@@ -71,15 +77,17 @@ class CliTest(unittest.TestCase):
         """A local transcript plus a hook state file = a session `share` can resolve for this cwd."""
         directory = Path(self.tmp.name) / ".claude" / "projects" / "repo"
         directory.mkdir(parents=True, exist_ok=True)
-        (directory / f"{session_id}.jsonl").write_text(
+        transcript = directory / f"{session_id}.jsonl"
+        transcript.write_text(
             json.dumps({"type": "user", "cwd": str(self.repo), "sessionId": session_id, "timestamp": "2026-09-03T10:00:00.000Z", "message": {"role": "user", "content": "share me"}}) + "\n"
         )
         state = Path(self.tmp.name) / "state"
         state.mkdir(parents=True, exist_ok=True)
         (state / f"{session_id}.json").write_text(json.dumps({"bytes": 0, "next_seq": 0, "meta": {}}))
+        return transcript
 
-    def run_cli(self, *args):
-        return subprocess.run([sys.executable, str(SCRIPT), *args], cwd=self.repo, capture_output=True, text=True, env=self.env)
+    def run_cli(self, *args, stdin="next step: land it\nfile: hive_mind.py"):
+        return subprocess.run([sys.executable, str(SCRIPT), *args], input=stdin, cwd=self.repo, capture_output=True, text=True, env=self.env)
 
     def test_empty_results_exit_1_with_stdout_clean(self):
         Stub.payloads.clear()
@@ -233,6 +241,73 @@ class CliTest(unittest.TestCase):
         self.assertEqual(empty.stdout, "")
         self.assertIn("no beamed session", empty.stderr)
 
+    def test_gist_is_posted_as_a_tagged_turn_after_the_transcript(self):
+        Stub.payloads.clear()
+        Stub.bodies.clear()
+        self.seed_transcript(GIST_SESSION)
+        res = self.run_cli("gist", "--post", "-")
+        self.assertEqual(res.returncode, 0, res.stderr)
+        messages = Stub.bodies[-1]["messages"]
+        self.assertEqual([m["seq"] for m in messages], [0, 1])
+        self.assertEqual(messages[0]["text"], "share me")
+        gist = messages[1]
+        self.assertEqual((gist["role"], gist["toolName"]), ("assistant", "gist"))
+        self.assertTrue(gist["text"].startswith("next step: land it"))
+        self.assertIn("run `hive-mind show 22222222 --last 20`", gist["text"])
+        self.assertEqual(res.stdout.rstrip("\n"), gist["text"])
+        # The hook must number its next batch past the gist, or the server drops one of them.
+        state = json.loads((Path(self.tmp.name) / "state" / f"{GIST_SESSION}.json").read_text())
+        self.assertEqual(state["next_seq"], 2)
+
+    def test_the_exported_session_id_beats_the_newest_transcript_in_the_directory(self):
+        """A planner and a worker session share this cwd; only the harness knows which one we are."""
+        Stub.payloads.clear()
+        self.seed_transcript(GIST_SESSION)
+        newest = self.seed_transcript(OTHER_SESSION)
+        os.utime(newest, (time.time() + 10, time.time() + 10))
+
+        Stub.seen.clear()
+        res = self.run_cli("gist", "--post", "-", stdin="worker brief")
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertEqual(Stub.seen[-1], f"/api/v1/agent-history/sessions/{OTHER_SESSION}")
+
+        Stub.seen.clear()
+        res = subprocess.run(
+            [sys.executable, str(SCRIPT), "gist", "--post", "-"],
+            input="worker brief", cwd=self.repo, capture_output=True, text=True,
+            env={**self.env, "CLAUDE_CODE_SESSION_ID": GIST_SESSION},
+        )
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertEqual(Stub.seen[-1], f"/api/v1/agent-history/sessions/{GIST_SESSION}")
+        self.assertIn("Session 22222222:", res.stdout)
+
+    def test_gist_reads_back_a_stored_brief_or_falls_back_to_the_last_reply(self):
+        Stub.payloads.clear()
+        stored = "goal: ship gist\n\nSession 33333333: run `hive-mind show 33333333 --last 20` for the full history."
+        Stub.payloads["session"] = {
+            "session": {"id": STORED_GIST_SESSION, "title": "t", "author": "Alice", "turns": 3},
+            "messages": [
+                {"seq": 0, "role": "user", "toolName": None, "text": "do it"},
+                {"seq": 1, "role": "assistant", "toolName": None, "text": "done"},
+                {"seq": 2, "role": "assistant", "toolName": "gist", "text": stored},
+            ],
+        }
+        res = self.run_cli("gist", STORED_GIST_SESSION[:8])
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertEqual(res.stdout.rstrip("\n"), stored)
+
+        Stub.payloads["session"] = {
+            "session": {"id": NO_GIST_SESSION, "title": "t", "author": "Alice", "turns": 2},
+            "messages": [
+                {"seq": 0, "role": "user", "toolName": None, "text": "do it"},
+                {"seq": 1, "role": "assistant", "toolName": None, "text": "last reply"},
+            ],
+        }
+        res = self.run_cli("gist", NO_GIST_SESSION[:8])
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertEqual(res.stdout.splitlines()[0], "last reply")
+        self.assertIn("run `hive-mind show 44444444 --last 20`", res.stdout)
+
     def test_doctor_flags_a_different_deployment(self):
         res = self.run_cli("doctor", "https://athene.dev.alvicom.ai")
         self.assertEqual(res.returncode, 1)
@@ -305,12 +380,14 @@ class InstallTest(unittest.TestCase):
         """A local transcript plus a hook state file = a session `share` can resolve for this cwd."""
         directory = Path(self.tmp.name) / ".claude" / "projects" / "repo"
         directory.mkdir(parents=True, exist_ok=True)
-        (directory / f"{session_id}.jsonl").write_text(
+        transcript = directory / f"{session_id}.jsonl"
+        transcript.write_text(
             json.dumps({"type": "user", "cwd": str(self.repo), "sessionId": session_id, "timestamp": "2026-09-03T10:00:00.000Z", "message": {"role": "user", "content": "share me"}}) + "\n"
         )
         state = Path(self.tmp.name) / "state"
         state.mkdir(parents=True, exist_ok=True)
         (state / f"{session_id}.json").write_text(json.dumps({"bytes": 0, "next_seq": 0, "meta": {}}))
+        return transcript
 
     def run_cli(self, *args):
         return subprocess.run([sys.executable, str(SCRIPT), *args], input="", capture_output=True, text=True, env=self.env, cwd=self.tmp.name)
