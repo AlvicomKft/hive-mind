@@ -1,6 +1,6 @@
-<p align="center"><img src="assets/banner.png" alt="Hive Mind — shared, searchable session history for coding agents" width="1280"></p>
+<p align="center"><img src="assets/banner.png" alt="Athene Hive Mind — shared, searchable session history for coding agents" width="1280"></p>
 
-# Hive Mind
+# Athene Hive Mind
 
 Shared, searchable Claude Code / Codex session history for a team. A hook ships each finished
 assistant turn to your Athene server; a CLI and three agent skills search it back, scoped to the

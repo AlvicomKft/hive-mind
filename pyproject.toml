@@ -1,7 +1,7 @@
 [project]
 name = "hive-mind"
 version = "0.3.2"
-description = "Shared, searchable Claude Code / Codex session history: hook, CLI and agent skill."
+description = "Athene Hive Mind: shared, searchable Claude Code / Codex session history: hook, CLI and agent skill."
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.11"
