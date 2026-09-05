@@ -7,7 +7,7 @@
           {
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hive_mind.py\" hook",
-            "timeout": 10
+            "async": true
           }
         ]
       }
